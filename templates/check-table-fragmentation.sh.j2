@@ -1,0 +1,26 @@
+#!/bin/bash
+# {{ ansible_managed }}
+# Alerts per InnoDB table holding enough free space for OPTIMIZE TABLE to be
+# worth running, and when it no longer does.
+
+set -euo pipefail
+
+NOTIFY="{{ monitoring_scripts_path }}/monitoring-notify"
+MIN_FREE_MB={{ monitoring_table_fragmentation_watch.min_free_mb | default(1024) | int }}
+MIN_FREE_PCT={{ monitoring_table_fragmentation_watch.min_free_pct | default(25) | int }}
+
+rows=$(/usr/bin/mysql --defaults-extra-file=/root/.my.cnf -N -B -e \
+    "SELECT CONCAT(table_schema, '.', table_name), ROUND(data_free / 1024 / 1024), \
+            ROUND(100 * data_free / (data_length + index_length)) \
+     FROM information_schema.tables \
+     WHERE engine = 'InnoDB' \
+       AND data_free >= ${MIN_FREE_MB} * 1024 * 1024 \
+       AND 100 * data_free / (data_length + index_length) >= ${MIN_FREE_PCT}")
+
+active=()
+while IFS=$'\t' read -r table free_mb pct; do
+    [ -n "$table" ] || continue
+    active+=("table-fragmentation-${table}")
+    "$NOTIFY" alert "table-fragmentation-${table}" "${table} has ${free_mb} MB free (${pct}%), OPTIMIZE TABLE would reclaim it"
+done <<< "$rows"
+"$NOTIFY" resolve table-fragmentation- "${active[@]}"

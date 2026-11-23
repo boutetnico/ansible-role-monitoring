@@ -1,0 +1,101 @@
+#!/usr/bin/env python3
+# {{ ansible_managed }}
+# Alert when the newest object under a backup prefix is older than max_age_hours
+# or smaller than min_size bytes.
+
+import json
+import subprocess
+import sys
+from datetime import datetime, timezone
+
+import boto3
+from botocore.credentials import InstanceMetadataFetcher, InstanceMetadataProvider
+
+NOTIFY = {{ (monitoring_scripts_path ~ '/monitoring-notify') | to_json }}
+REGION = {{ monitoring_s3_backup_watch.region | default('') | to_json }}
+CREDENTIALS = {{ monitoring_s3_backup_watch.credentials | default('default') | to_json }}
+CHECKS = json.loads(
+    r"""{{ monitoring_s3_backup_watch.checks | default([]) | to_json }}""",
+)
+
+
+def notify(*args):
+    if subprocess.run([NOTIFY, *args], check=False).returncode != 0:
+        print(f"monitoring-notify {args[0]} failed", file=sys.stderr)
+
+
+def aws_session():
+    if CREDENTIALS == "default":
+        return boto3.Session(region_name=REGION or None)
+    if CREDENTIALS != "instance-profile":
+        raise ValueError(f"unknown credentials mode {CREDENTIALS!r}")
+    provider = InstanceMetadataProvider(
+        iam_role_fetcher=InstanceMetadataFetcher(timeout=2, num_attempts=2)
+    )
+    creds = provider.load()
+    if creds is None:
+        raise RuntimeError("no instance profile credentials")
+    creds = creds.get_frozen_credentials()
+    return boto3.Session(
+        aws_access_key_id=creds.access_key,
+        aws_secret_access_key=creds.secret_key,
+        aws_session_token=creds.token,
+        region_name=REGION or None,
+    )
+
+
+def newest(s3, bucket, prefix):
+    latest = None
+    for page in s3.get_paginator("list_objects_v2").paginate(
+        Bucket=bucket, Prefix=prefix
+    ):
+        for obj in page.get("Contents", []):
+            if latest is None or obj["LastModified"] > latest["LastModified"]:
+                latest = obj
+    return latest
+
+
+def human(size):
+    for unit in ("B", "KB", "MB", "GB"):
+        if size < 1000 or unit == "GB":
+            return f"{size:.0f} {unit}" if unit == "B" else f"{size:.1f} {unit}"
+        size /= 1000
+
+
+def problem(check, obj, now):
+    if obj is None:
+        return "no backup found"
+    age = (now - obj["LastModified"]).total_seconds() / 3600
+    if age > check["max_age_hours"]:
+        return (
+            f"last backup is {age:.0f}h old, expected under {check['max_age_hours']}h"
+        )
+    if obj["Size"] < check.get("min_size", 0):
+        return (
+            f"last backup is {human(obj['Size'])}, "
+            f"expected at least {human(check['min_size'])}"
+        )
+    return None
+
+
+try:
+    s3 = aws_session().client("s3")
+    now = datetime.now(timezone.utc)
+    results = [
+        (check, problem(check, newest(s3, check["bucket"], check["prefix"]), now))
+        for check in CHECKS
+    ]
+except Exception as e:
+    print(f"aws query failed: {e}", file=sys.stderr)
+    sys.exit(1)
+
+active = []
+for check, issue in results:
+    if not issue:
+        continue
+    name = check.get("name", f"{check['bucket']}/{check['prefix']}".rstrip("/"))
+    key = f"s3-backups-{check['bucket']}-{check['prefix']}"
+    active.append(key)
+    notify("alert", key, f"S3 backup {name}: {issue}")
+
+notify("resolve", "s3-backups-", *active)

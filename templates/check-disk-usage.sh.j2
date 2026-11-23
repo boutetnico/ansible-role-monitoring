@@ -1,0 +1,22 @@
+#!/bin/bash
+# {{ ansible_managed }}
+# Alerts per mount point above the usage threshold, and when it drops back.
+
+set -euo pipefail
+
+NOTIFY="{{ monitoring_scripts_path }}/monitoring-notify"
+THRESHOLD={{ monitoring_disk_usage_threshold | int }}
+
+active=()
+while read -r usage mountpoint; do
+    pct="${usage%\%}"
+{% for exclude in monitoring_disk_usage_excludes %}
+    [[ "$mountpoint" == {{ exclude | quote }}* ]] && continue
+{% endfor %}
+    key="disk-usage-${mountpoint}"
+    if [ "$pct" -ge "$THRESHOLD" ]; then
+        active+=("$key")
+        "$NOTIFY" alert "$key" "${mountpoint} at ${pct}% (threshold ${THRESHOLD}%)"
+    fi
+done < <(/usr/bin/df --output=pcent,target -x tmpfs -x devtmpfs -x overlay | /usr/bin/tail -n +2)
+"$NOTIFY" resolve disk-usage- "${active[@]}"

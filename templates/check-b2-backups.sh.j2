@@ -1,0 +1,34 @@
+#!/bin/bash
+# {{ ansible_managed }}
+# Alerts per backup folder in a Backblaze B2 bucket whose newest file, named
+# with a YYYYMMDDTHHMMSS timestamp, is missing or too old.
+
+set -euo pipefail
+
+NOTIFY="{{ monitoring_scripts_path }}/monitoring-notify"
+{% set watch = monitoring_b2_backup_watch %}
+BUCKET={{ watch.bucket | quote }}
+MAX_AGE_HOURS={{ watch.max_age_hours | default(26) | int }}
+NOW=$(/usr/bin/date +%s)
+{% for key, value in (watch.env | default({})).items() %}
+export {{ key }}={{ value | quote }}
+{% endfor %}
+
+active=()
+{% for folder in watch.folders %}
+folder={{ folder | quote }}
+key="b2-backups-${folder}"
+latest=$(b2 ls --recursive "b2://${BUCKET}/${folder}/" | /usr/bin/awk '{print $NF}' | /usr/bin/sort | /usr/bin/tail -1)
+stamp=$(printf '%s' "$latest" | /usr/bin/grep -oE '[0-9]{8}T[0-9]{6}' | /usr/bin/tail -1 || true)
+if [ -z "$stamp" ]; then
+    active+=("$key")
+    "$NOTIFY" alert "$key" "no backup found in ${BUCKET}/${folder}/"
+else
+    age=$(( (NOW - $(/usr/bin/date -d "${stamp:0:4}-${stamp:4:2}-${stamp:6:2} ${stamp:9:2}:${stamp:11:2}:${stamp:13:2}" +%s)) / 3600 ))
+    if [ "$age" -ge "$MAX_AGE_HOURS" ]; then
+        active+=("$key")
+        "$NOTIFY" alert "$key" "last backup in ${BUCKET}/${folder}/ is ${age}h old (max ${MAX_AGE_HOURS}h): ${latest}"
+    fi
+fi
+{% endfor %}
+"$NOTIFY" resolve b2-backups- "${active[@]}"

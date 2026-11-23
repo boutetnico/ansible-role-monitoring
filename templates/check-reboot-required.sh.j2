@@ -1,0 +1,15 @@
+#!/bin/bash
+# {{ ansible_managed }}
+# Alerts while /var/run/reboot-required exists.
+
+set -euo pipefail
+
+NOTIFY="{{ monitoring_scripts_path }}/monitoring-notify"
+
+if [ -f /var/run/reboot-required ]; then
+    since=$(/usr/bin/date -r /var/run/reboot-required '+%Y-%m-%d')
+    pkgs=$(/usr/bin/sort -u /var/run/reboot-required.pkgs 2>/dev/null | /usr/bin/paste -sd ',' - || true)
+    "$NOTIFY" alert reboot-required "reboot required since ${since}${pkgs:+ (${pkgs})}"
+else
+    "$NOTIFY" clear reboot-required "rebooted, no reboot required anymore"
+fi

@@ -1,0 +1,8 @@
+# {{ ansible_managed }}
+[Unit]
+Description=Monitoring: dispatch all checks
+
+[Service]
+Type=oneshot
+ExecStart={{ monitoring_scripts_path }}/monitoring-dispatch
+SyslogIdentifier=monitoring-checks

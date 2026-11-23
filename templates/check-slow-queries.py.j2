@@ -1,0 +1,221 @@
+#!/usr/bin/env python3
+# {{ ansible_managed }}
+# Watch the MySQL slow query log and alert once per NEW query fingerprint that
+# is slow or scans many rows, the usual symptom of a query shipped without a
+# supporting index. The first run records the existing fingerprints silently.
+
+import hashlib
+import json
+import os
+import re
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+NOTIFY = {{ (monitoring_scripts_path ~ '/monitoring-notify') | to_json }}
+STATE_DIR = Path({{ (monitoring_state_dir ~ '/check-slow-queries') | to_json }})
+SLOW_LOG = {{ monitoring_slow_query_watch.slow_log_path | default('/var/log/mysql/mysql-slow.log') | to_json }}
+MIN_QUERY_TIME = {{ monitoring_slow_query_watch.min_query_time | default(1.0) | float }}
+MIN_ROWS_EXAMINED = {{ monitoring_slow_query_watch.min_rows_examined | default(100000) | int }}
+MIN_EXAMINED_SENT_RATIO = {{ monitoring_slow_query_watch.min_examined_sent_ratio | default(1000) | int }}
+MIN_CALLS = {{ monitoring_slow_query_watch.min_calls | default(5) | int }}
+KNOWN_RETENTION_DAYS = {{ monitoring_slow_query_watch.known_retention_days | default(30) | int }}
+MAX_ALERTS_PER_RUN = {{ monitoring_slow_query_watch.max_alerts_per_run | default(5) | int }}
+SEED_MAX_BYTES = {{ monitoring_slow_query_watch.seed_max_bytes | default(2147483648) | int }}
+
+OFFSET_FILE = STATE_DIR / "offset.json"
+KNOWN_FILE = STATE_DIR / "known.json"
+SEEDED_FLAG = STATE_DIR / "seeded"
+
+QUERY_TIME_RE = re.compile(
+    r"# Query_time:\s+([\d.]+)\s+Lock_time:\s+[\d.]+\s+"
+    r"Rows_sent:\s+(\d+)\s+Rows_examined:\s+(\d+)"
+)
+FULL_SCAN_RE = re.compile(r"# Full_scan:\s+(\w+)")
+USER_RE = re.compile(r"# User@Host:\s+([^\[\s]+)\[")
+ENTRY_SPLIT_RE = re.compile(r"(?m)^(# User@Host:.*)$")
+
+
+def notify(*args):
+    if subprocess.run([NOTIFY, *args], check=False).returncode != 0:
+        print(f"monitoring-notify {args[0]} failed", file=sys.stderr)
+
+
+def load_json(path, default):
+    try:
+        return json.loads(path.read_text())
+    except (OSError, ValueError):
+        return default
+
+
+def fingerprint(sql):
+    s = re.sub(r"/\*.*?\*/", "", sql, flags=re.S)
+    s = re.sub(r"--[^\n]*", "", s)
+    s = s.lower()
+    s = re.sub(r"'(?:\\.|[^'])*'", "?", s)
+    s = re.sub(r'"(?:\\.|[^"])*"', "?", s)
+    s = re.sub(r"\b0x[0-9a-f]+\b", "?", s)
+    s = re.sub(r"\b\d+\.\d+\b", "?", s)
+    s = re.sub(r"\b\d+\b", "?", s)
+    s = re.sub(r"\s+", " ", s).strip()
+    s = re.sub(r"\bin\s*\(\s*\?(?:\s*,\s*\?)*\s*\)", "in (?+)", s)
+    s = re.sub(
+        r"\bvalues\s*\(\s*\?(?:\s*,\s*\?)*\s*\)(?:\s*,\s*\(\s*\?(?:\s*,\s*\?)*\s*\))+",
+        "values (?+)",
+        s,
+    )
+    return s
+
+
+def parse_sql(block):
+    lines = []
+    for line in block.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        low = stripped.lower()
+        if low.startswith("set timestamp=") or low.startswith("use "):
+            continue
+        lines.append(stripped)
+    return " ".join(lines).strip().rstrip(";")
+
+
+def humanize(n):
+    n = float(n)
+    for unit in ("", "K", "M", "B"):
+        if abs(n) < 1000:
+            return f"{n:.0f}{unit}"
+        n /= 1000
+    return f"{n:.0f}T"
+
+
+def read_new_bytes():
+    st = os.stat(SLOW_LOG)
+    offset_state = load_json(OFFSET_FILE, None)
+    if offset_state is None:
+        start = max(0, st.st_size - SEED_MAX_BYTES)
+    elif offset_state.get("inode") != st.st_ino or st.st_size < offset_state.get(
+        "offset", 0
+    ):
+        start = 0
+    else:
+        start = offset_state["offset"]
+
+    with open(SLOW_LOG, "rb") as f:
+        f.seek(start)
+        data = f.read()
+        end = f.tell()
+
+    OFFSET_FILE.write_text(json.dumps({"inode": st.st_ino, "offset": end}))
+    return data.decode("utf-8", "replace")
+
+
+def aggregate(text):
+    agg = {}
+    parts = ENTRY_SPLIT_RE.split(text)
+    # parts = [preamble, header1, block1, header2, block2, ...]
+    for i in range(1, len(parts), 2):
+        header = parts[i]
+        block = parts[i + 1] if i + 1 < len(parts) else ""
+        m = QUERY_TIME_RE.search(block)
+        if not m:
+            continue
+        qt = float(m.group(1))
+        sent = int(m.group(2))
+        examined = int(m.group(3))
+        sql = parse_sql(block)
+        if not sql:
+            continue
+        fp = fingerprint(sql)
+        h = hashlib.sha1(fp.encode()).hexdigest()[:16]
+        a = agg.get(h)
+        if a is None:
+            a = agg[h] = {
+                "fp": fp,
+                "count": 0,
+                "max_qt": 0.0,
+                "max_examined": 0,
+                "ratio": 0.0,
+                "full_scan": False,
+                "users": set(),
+            }
+        a["count"] += 1
+        a["max_qt"] = max(a["max_qt"], qt)
+        a["max_examined"] = max(a["max_examined"], examined)
+        a["ratio"] = max(a["ratio"], examined / sent if sent > 0 else float(examined))
+        um = USER_RE.search(header)
+        if um:
+            a["users"].add(um.group(1))
+        fs = FULL_SCAN_RE.search(block)
+        if fs and fs.group(1).lower() in ("yes", "1", "true"):
+            a["full_scan"] = True
+    return agg
+
+
+def is_bad(a):
+    # The examined/sent ratio alone flags every COUNT or aggregate, so require
+    # absolute volume or wall-clock slowness.
+    return a["max_qt"] >= MIN_QUERY_TIME or a["max_examined"] >= MIN_ROWS_EXAMINED
+
+
+def alert(a):
+    missing_index = a["ratio"] >= MIN_EXAMINED_SENT_RATIO
+    reason = "possible missing index" if missing_index else "slow"
+    fp = a["fp"] if len(a["fp"]) <= 2900 else a["fp"][:2900] + " …"
+    users = ", ".join(sorted(a["users"])) or "unknown"
+    details = [
+        f"users: {users}",
+        f"max time: {a['max_qt']:.2f}s",
+        f"rows examined: {humanize(a['max_examined'])}",
+        f"examined/sent: {humanize(a['ratio'])}",
+        f"calls since last run: {a['count']}",
+    ]
+    if a["full_scan"]:
+        details.append("full scan: yes")
+    notify("send", f"New slow query ({reason})\n{fp}\n" + "\n".join(details))
+
+
+def main():
+    if not Path(SLOW_LOG).exists():
+        print(f"slow query log {SLOW_LOG} not found", file=sys.stderr)
+        return 1
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+
+    agg = aggregate(read_new_bytes())
+    known = load_json(KNOWN_FILE, {})
+    seeded = SEEDED_FLAG.exists()
+    now = time.time()
+
+    new_bad = []
+    for h, a in agg.items():
+        if h in known or not seeded:
+            known[h] = now
+            continue
+        # Leave a rare fingerprint unrecorded so a later burst still alerts
+        if is_bad(a) and a["count"] >= MIN_CALLS:
+            new_bad.append(a)
+            known[h] = now
+
+    cutoff = now - KNOWN_RETENTION_DAYS * 86400
+    known = {h: t for h, t in known.items() if t >= cutoff}
+    KNOWN_FILE.write_text(json.dumps(known))
+
+    if not seeded:
+        SEEDED_FLAG.touch()
+        return 0
+
+    new_bad.sort(key=lambda a: a["ratio"], reverse=True)
+    for a in new_bad[:MAX_ALERTS_PER_RUN]:
+        alert(a)
+    extra = len(new_bad) - MAX_ALERTS_PER_RUN
+    if extra > 0:
+        notify(
+            "send",
+            f"{extra} more new slow queries this run (raise thresholds to quiet)",
+        )
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

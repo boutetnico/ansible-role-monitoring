@@ -1,0 +1,196 @@
+#!/usr/bin/env python3
+# {{ ansible_managed }}
+# Query Elasticsearch for log-based alert rules.
+#
+#   frequency  at least `threshold` matching events per query_key value in the
+#              timeframe; repeats at most every realert_minutes
+#   flatline   a query_key value seen over baseline_hours sent fewer than
+#              `threshold` events in the timeframe; alerts until it recovers
+
+import base64
+import json
+import string
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.request
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
+NOTIFY = {{ (monitoring_scripts_path ~ '/monitoring-notify') | to_json }}
+STATE_DIR = Path({{ (monitoring_state_dir ~ '/check-es-logs') | to_json }})
+ES_URL = {{ monitoring_es_logs_watch.url | default('http://127.0.0.1:9200') | to_json }}
+ES_USER = {{ monitoring_es_logs_watch.username | default('') | to_json }}
+ES_PASS = {{ monitoring_es_logs_watch.password | default('') | to_json }}
+RULES = json.loads(
+    r"""{{ monitoring_es_logs_watch.rules | default([]) | to_json }}""",
+)
+
+
+def notify(*args):
+    if subprocess.run([NOTIFY, *args], check=False).returncode != 0:
+        print(f"monitoring-notify {args[0]} failed", file=sys.stderr)
+        return False
+    return True
+
+
+def es_post(path, body):
+    req = urllib.request.Request(
+        f"{ES_URL.rstrip('/')}{path}",
+        data=json.dumps(body).encode(),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    if ES_USER:
+        token = base64.b64encode(f"{ES_USER}:{ES_PASS}".encode()).decode()
+        req.add_header("Authorization", f"Basic {token}")
+    try:
+        with urllib.request.urlopen(req, timeout=10) as r:
+            return json.load(r)
+    except urllib.error.HTTPError as e:
+        body = e.read().decode(errors="replace")[:500]
+        raise RuntimeError(f"ES {e.code} on {path}: {body}") from None
+
+
+def search_path(rule):
+    return f"/{rule['index']}/_search?ignore_unavailable=true&allow_no_indices=true"
+
+
+def recently_alerted(state_file, minutes):
+    if not state_file.exists():
+        return False
+    return (time.time() - state_file.stat().st_mtime) < minutes * 60
+
+
+def state_path(rule_name, host):
+    safe = "".join(
+        c if c.isalnum() or c in "._-" else "_" for c in f"{rule_name}__{host}"
+    )
+    return STATE_DIR / safe
+
+
+class DottedFormatter(string.Formatter):
+    """Treats {a.b.c} as a single dotted key lookup, not attribute access."""
+
+    def get_field(self, field_name, args, kwargs):
+        source = kwargs.get("_source", {})
+        cur = source
+        for part in field_name.split("."):
+            if isinstance(cur, dict) and part in cur:
+                cur = cur[part]
+            else:
+                return "", field_name
+        return ("" if cur is None else cur), field_name
+
+
+_FORMATTER = DottedFormatter()
+
+
+def render(template, source):
+    try:
+        return _FORMATTER.vformat(template, (), {"_source": source})
+    except Exception as e:
+        return f"{template} (render error: {e})"
+
+
+def run_frequency(rule):
+    now = datetime.now(timezone.utc)
+    gte = (now - timedelta(minutes=rule["timeframe_minutes"])).isoformat()
+    query_key = rule.get("query_key", "host.name")
+    body = {
+        "size": 0,
+        "query": {
+            "bool": {
+                "filter": [
+                    {"range": {"@timestamp": {"gte": gte}}},
+                    rule["filter"],
+                ]
+            }
+        },
+        "aggs": {
+            "by_host": {
+                "terms": {"field": query_key, "size": 100, "missing": "unknown"},
+                "aggs": {
+                    "sample": {
+                        "top_hits": {
+                            "size": 1,
+                            "sort": [{"@timestamp": {"order": "desc"}}],
+                        }
+                    }
+                },
+            }
+        },
+    }
+    resp = es_post(search_path(rule), body)
+    for bucket in resp.get("aggregations", {}).get("by_host", {}).get("buckets", []):
+        host = bucket["key"]
+        count = bucket["doc_count"]
+        if count < rule.get("threshold", 1):
+            continue
+        state = state_path(rule["name"], host)
+        if recently_alerted(state, rule.get("realert_minutes", 15)):
+            continue
+        sample = bucket["sample"]["hits"]["hits"][0]["_source"]
+        sample["count"] = count
+        text = render(rule["text_template"], sample)
+        if notify("send", f"{rule['title']}\n{text}"):
+            state.touch()
+
+
+def run_flatline(rule):
+    now = datetime.now(timezone.utc)
+    gte = (now - timedelta(minutes=rule["timeframe_minutes"])).isoformat()
+    baseline_hours = rule.get("baseline_hours", 24)
+    baseline_gte = (now - timedelta(hours=baseline_hours)).isoformat()
+    query_key = rule.get("query_key", "host.name")
+
+    def host_counts(since):
+        body = {
+            "size": 0,
+            "query": {"bool": {"filter": [{"range": {"@timestamp": {"gte": since}}}]}},
+            "aggs": {"by_host": {"terms": {"field": query_key, "size": 500}}},
+        }
+        resp = es_post(search_path(rule), body)
+        buckets = resp.get("aggregations", {}).get("by_host", {}).get("buckets", [])
+        return {b["key"]: b["doc_count"] for b in buckets}
+
+    recent = host_counts(gte)
+    expected = host_counts(baseline_gte)
+    threshold = rule.get("threshold", 1)
+
+    # "--" keeps one rule's prefix from matching another rule's keys
+    prefix = f"es-logs-{rule['name']}--"
+    active = []
+    for host in expected:
+        count = recent.get(host, 0)
+        if count >= threshold:
+            continue
+        key = f"{prefix}{host}"
+        active.append(key)
+        text = render(
+            rule["text_template"],
+            {
+                "host": {"name": host},
+                "count": count,
+                "timeframe": rule["timeframe_minutes"],
+            },
+        )
+        notify("alert", key, f"{rule['title']}\n{text}")
+    notify("resolve", prefix, *active)
+
+
+handlers = {"frequency": run_frequency, "flatline": run_flatline}
+
+STATE_DIR.mkdir(parents=True, exist_ok=True)
+failed = []
+for rule in RULES:
+    try:
+        handlers[rule["type"]](rule)
+    except Exception as e:
+        failed.append(rule.get("name", "?"))
+        print(f"rule {rule.get('name', '?')}: {e}", file=sys.stderr)
+
+if failed:
+    print(f"rules failed: {', '.join(failed)}", file=sys.stderr)
+    sys.exit(1)

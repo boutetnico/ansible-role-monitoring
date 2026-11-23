@@ -1,0 +1,28 @@
+#!/bin/bash
+# {{ ansible_managed }}
+# Alerts when a file is missing or older than max_age_days.
+
+set -euo pipefail
+
+NOTIFY="{{ monitoring_scripts_path }}/monitoring-notify"
+NOW=$(/usr/bin/date +%s)
+
+check_file() {
+    local key="files-$1" path="$1" max_days="$2" age
+    if [ ! -f "$path" ]; then
+        "$NOTIFY" alert "$key" "missing file: ${path}"
+        return
+    fi
+    if [ "$max_days" -gt 0 ]; then
+        age=$(( (NOW - $(/usr/bin/stat -c %Y "$path")) / 86400 ))
+        if [ "$age" -gt "$max_days" ]; then
+            "$NOTIFY" alert "$key" "${path} is ${age} days old (max ${max_days})"
+            return
+        fi
+    fi
+    "$NOTIFY" clear "$key" "${path} is fine again"
+}
+
+{% for file in monitoring_file_checks %}
+check_file {{ file.path | quote }} {{ file.max_age_days | default(0) | int }}
+{% endfor %}

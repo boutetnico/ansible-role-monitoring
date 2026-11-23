@@ -1,0 +1,31 @@
+#!/bin/bash
+# {{ ansible_managed }}
+# Runs each enabled check on its interval, in minutes since midnight. A check
+# exits non-zero only when it cannot run, never when it alerts.
+
+set -uo pipefail
+
+SCRIPTS_PATH="{{ monitoring_scripts_path }}"
+NOTIFY="${SCRIPTS_PATH}/monitoring-notify"
+NOW=$((10#$(date +%H) * 60 + 10#$(date +%M)))
+
+run() {
+    local name="$1" every="$2" script err rc
+    (( NOW % every == 0 )) || return 0
+    script="${SCRIPTS_PATH}/check-${name}"
+    [ -x "$script" ] || return 0
+    err=$(mktemp)
+    "$script" 2> "$err"
+    rc=$?
+    cat "$err" >&2
+    if [ "$rc" -ne 0 ]; then
+        "$NOTIFY" alert "dispatch-${name}" "monitoring check ${name} failed (exit ${rc}): $(tail -n 1 "$err")"
+    else
+        "$NOTIFY" clear "dispatch-${name}" "monitoring check ${name} runs again"
+    fi
+    rm -f "$err"
+}
+
+{% for check in monitoring_registry | selectattr('enabled', 'truthy') | list + monitoring_custom_checks %}
+run {{ check.name | quote }} {{ monitoring_intervals[check.name] | default(check.every | default(1)) | int }}
+{% endfor %}

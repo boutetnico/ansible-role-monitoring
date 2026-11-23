@@ -1,0 +1,158 @@
+#!/usr/bin/env python3
+# {{ ansible_managed }}
+# Alert on burstable EC2 instances draining their CPU credit balance: a drop of
+# DROP_PERCENT or more over WINDOW_HOURS, or a balance below FLOOR. Instances
+# are discovered at each run, optionally filtered by tag.
+
+import re
+import subprocess
+import sys
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
+import boto3
+from botocore.credentials import InstanceMetadataFetcher, InstanceMetadataProvider
+
+NOTIFY = {{ (monitoring_scripts_path ~ '/monitoring-notify') | to_json }}
+STATE_DIR = Path({{ (monitoring_state_dir ~ '/check-cpu-credits') | to_json }})
+REGION = {{ monitoring_cpu_credits_watch.region | default('') | to_json }}
+CREDENTIALS = {{ monitoring_cpu_credits_watch.credentials | default('default') | to_json }}
+TAG_KEY = {{ monitoring_cpu_credits_watch.tag_key | default('') | to_json }}
+TAG_VALUE = {{ monitoring_cpu_credits_watch.tag_value | default('') | to_json }}
+WINDOW_HOURS = {{ monitoring_cpu_credits_watch.window_hours | default(6) | int }}
+DROP_PERCENT = {{ monitoring_cpu_credits_watch.drop_percent | default(25) | float }}
+FLOOR = {{ monitoring_cpu_credits_watch.floor | default(20) | float }}
+
+BURSTABLE_TYPE = re.compile(r"^t\d")
+
+
+def notify(*args):
+    if subprocess.run([NOTIFY, *args], check=False).returncode != 0:
+        print(f"monitoring-notify {args[0]} failed", file=sys.stderr)
+        return False
+    return True
+
+
+def aws_session():
+    if CREDENTIALS == "default":
+        return boto3.Session(region_name=REGION or None)
+    if CREDENTIALS != "instance-profile":
+        raise ValueError(f"unknown credentials mode {CREDENTIALS!r}")
+    provider = InstanceMetadataProvider(
+        iam_role_fetcher=InstanceMetadataFetcher(timeout=2, num_attempts=2)
+    )
+    creds = provider.load()
+    if creds is None:
+        raise RuntimeError("no instance profile credentials")
+    creds = creds.get_frozen_credentials()
+    return boto3.Session(
+        aws_access_key_id=creds.access_key,
+        aws_secret_access_key=creds.secret_key,
+        aws_session_token=creds.token,
+        region_name=REGION or None,
+    )
+
+
+def burstable_instances(ec2):
+    instances = {}
+    filters = [{"Name": "instance-state-name", "Values": ["running"]}]
+    if TAG_KEY:
+        filters.append({"Name": f"tag:{TAG_KEY}", "Values": [TAG_VALUE]})
+    for page in ec2.get_paginator("describe_instances").paginate(Filters=filters):
+        for reservation in page["Reservations"]:
+            for instance in reservation["Instances"]:
+                if not BURSTABLE_TYPE.match(instance["InstanceType"]):
+                    continue
+                tags = {t["Key"]: t["Value"] for t in instance.get("Tags", [])}
+                instances[instance["InstanceId"]] = tags.get(
+                    "Name", instance["InstanceId"]
+                )
+    return instances
+
+
+def credit_balances(cloudwatch, instance_ids, start, end):
+    series = {instance_id: [] for instance_id in instance_ids}
+    if not instance_ids:
+        return series
+    queries = [
+        {
+            "Id": f"i{n}",
+            "MetricStat": {
+                "Metric": {
+                    "Namespace": "AWS/EC2",
+                    "MetricName": "CPUCreditBalance",
+                    "Dimensions": [{"Name": "InstanceId", "Value": instance_id}],
+                },
+                "Period": 300,
+                "Stat": "Average",
+            },
+        }
+        for n, instance_id in enumerate(instance_ids)
+    ]
+    kwargs = {
+        "MetricDataQueries": queries,
+        "StartTime": start,
+        "EndTime": end,
+        "ScanBy": "TimestampAscending",
+    }
+    while True:
+        resp = cloudwatch.get_metric_data(**kwargs)
+        for result in resp["MetricDataResults"]:
+            instance_id = instance_ids[int(result["Id"][1:])]
+            series[instance_id].extend(zip(result["Timestamps"], result["Values"]))
+        if "NextToken" not in resp:
+            break
+        kwargs["NextToken"] = resp["NextToken"]
+    return {instance_id: sorted(points) for instance_id, points in series.items()}
+
+
+now = datetime.now(timezone.utc)
+window_start = now - timedelta(hours=WINDOW_HOURS)
+
+try:
+    session = aws_session()
+    instances = burstable_instances(session.client("ec2"))
+    balances = credit_balances(
+        session.client("cloudwatch"),
+        list(instances),
+        window_start - timedelta(minutes=15),
+        now,
+    )
+except Exception as e:
+    print(f"aws query failed: {e}", file=sys.stderr)
+    sys.exit(1)
+
+STATE_DIR.mkdir(parents=True, exist_ok=True)
+for instance_id, name in instances.items():
+    points = balances[instance_id]
+    # Instances younger than the window start with an empty balance
+    if not points or points[0][0] > window_start:
+        continue
+
+    past = points[0][1]
+    current = points[-1][1]
+    drop = (past - current) * 100 / past if past > 0 else 0
+
+    if current < FLOOR:
+        status = "exhausted"
+    elif drop >= DROP_PERCENT:
+        status = "draining"
+    else:
+        status = "ok"
+
+    state_file = STATE_DIR / instance_id
+    previous = state_file.read_text().strip() if state_file.exists() else "ok"
+    if status == previous:
+        continue
+
+    if status == "exhausted":
+        message = f"{name}: CPU credit balance exhausted ({current:.0f} left)"
+    elif status == "draining":
+        message = (
+            f"{name}: CPU credit balance dropped {drop:.0f}% in {WINDOW_HOURS}h "
+            f"({past:.0f} -> {current:.0f})"
+        )
+    else:
+        message = f"{name}: CPU credit balance no longer draining ({current:.0f})"
+    if notify("send", message):
+        state_file.write_text(status)

@@ -1,0 +1,26 @@
+#!/bin/bash
+# {{ ansible_managed }}
+# Alerts when a Laravel failed_jobs table gains rows within the window.
+
+set -euo pipefail
+
+NOTIFY="{{ monitoring_scripts_path }}/monitoring-notify"
+STATE_DIR="{{ monitoring_state_dir }}/check-failed-jobs"
+MYSQL=(/usr/bin/mysql --defaults-extra-file=/root/.my.cnf -N -B)
+/usr/bin/mkdir -p "$STATE_DIR"
+
+{% for check in monitoring_failed_jobs_checks %}
+{% set days = check.window_days | default(7) | int %}
+NAME={{ check.name | quote }}
+DATABASE={{ check.database | quote }}
+TABLE={{ check.table | default('failed_jobs') | quote }}
+COUNT=$("${MYSQL[@]}" -e "SELECT COUNT(*) FROM \`${TABLE}\` WHERE failed_at >= NOW() - INTERVAL {{ days }} DAY" "$DATABASE")
+[[ "$COUNT" =~ ^[0-9]+$ ]] || { echo "no failed_jobs count from ${DATABASE}" >&2; exit 1; }
+STATE="${STATE_DIR}/${NAME}"
+PREV=$(cat "$STATE" 2>/dev/null || true)
+printf '%s' "$COUNT" > "$STATE"
+if [[ "$PREV" =~ ^[0-9]+$ ]] && [ "$COUNT" -gt "$PREV" ]; then
+    "$NOTIFY" send "${NAME}: $((COUNT - PREV)) new failed job(s), ${COUNT} in the last {{ days }} days"
+fi
+
+{% endfor %}

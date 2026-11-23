@@ -1,0 +1,147 @@
+#!/usr/bin/env python3
+# {{ ansible_managed }}
+# Delivers alerts to Slack and/or Telegram.
+#
+#   monitoring-notify alert KEY MESSAGE   first occurrence, then reminders
+#   monitoring-notify clear KEY MESSAGE   recovery, only if KEY was alerting;
+#                                         an empty MESSAGE clears silently
+#   monitoring-notify resolve PREFIX [KEY...]  clear every PREFIX* key not listed
+#   monitoring-notify send MESSAGE        one-off message
+#   monitoring-notify test                test message
+#
+# An alert is recorded only once delivered, so a failed delivery is retried on
+# the next run. While the maintenance flag is fresh nothing is sent or recorded.
+
+import json
+import re
+import socket
+import sys
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+from pathlib import Path
+
+SLACK_WEBHOOK_URL = {{ monitoring_slack_webhook_url | to_json }}
+TELEGRAM_BOT_TOKEN = {{ monitoring_telegram_bot_token | to_json }}
+TELEGRAM_CHAT_ID = {{ monitoring_telegram_chat_id | string | to_json }}
+LABEL = {{ monitoring_label | to_json }}
+REMINDER_SECONDS = {{ monitoring_reminder_minutes | int }} * 60
+MAINTENANCE_FLAG = Path({{ monitoring_maintenance_flag | to_json }})
+MAINTENANCE_MAX_SECONDS = {{ monitoring_maintenance_max_minutes | int }} * 60
+ALERTS_DIR = Path({{ (monitoring_state_dir ~ '/alerts') | to_json }})
+MAX_LENGTH = 3800
+
+
+def muted():
+    try:
+        age = time.time() - MAINTENANCE_FLAG.stat().st_mtime
+    except FileNotFoundError:
+        return False
+    return MAINTENANCE_MAX_SECONDS == 0 or age < MAINTENANCE_MAX_SECONDS
+
+
+def post(url, data, headers):
+    req = urllib.request.Request(url, data=data, headers=headers, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            return resp.status == 200
+    except (urllib.error.URLError, OSError) as e:
+        host = urllib.parse.urlsplit(url).netloc
+        print(f"delivery to {host} failed: {e}", file=sys.stderr)
+        return False
+
+
+def deliver(text):
+    prefix = f"[{LABEL}] " if LABEL else ""
+    text = f"{prefix}{socket.gethostname()}: {text}"
+    if len(text) > MAX_LENGTH:
+        text = text[:MAX_LENGTH] + "\n…truncated"
+    ok = True
+    if SLACK_WEBHOOK_URL:
+        ok = (
+            post(
+                SLACK_WEBHOOK_URL,
+                json.dumps({"text": text}).encode(),
+                {"Content-Type": "application/json"},
+            )
+            and ok
+        )
+    if TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID:
+        ok = (
+            post(
+                f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
+                urllib.parse.urlencode(
+                    {
+                        "chat_id": TELEGRAM_CHAT_ID,
+                        "disable_web_page_preview": "true",
+                        "text": text,
+                    }
+                ).encode(),
+                {"Content-Type": "application/x-www-form-urlencoded"},
+            )
+            and ok
+        )
+    return ok
+
+
+def state_file(key):
+    return ALERTS_DIR / re.sub(r"[^A-Za-z0-9._-]", "_", key)
+
+
+def alert(key, message):
+    if muted():
+        return 0
+    path = state_file(key)
+    reminder = path.exists()
+    if reminder and (
+        REMINDER_SECONDS == 0 or time.time() - path.stat().st_mtime < REMINDER_SECONDS
+    ):
+        return 0
+    if not deliver(f"{message} (still failing)" if reminder else message):
+        return 1
+    path.write_text(message)
+    return 0
+
+
+def clear(key, message):
+    path = state_file(key)
+    if not path.exists():
+        return 0
+    if message and not muted() and not deliver(message):
+        return 1
+    path.unlink()
+    return 0
+
+
+def resolve(prefix, active):
+    active = {state_file(key).name for key in active}
+    rc = 0
+    for path in sorted(ALERTS_DIR.glob(state_file(prefix).name + "*")):
+        if path.name not in active:
+            rc |= clear(path.name, f"resolved: {path.read_text()}")
+    return rc
+
+
+def main(argv):
+    ALERTS_DIR.mkdir(parents=True, exist_ok=True)
+    if len(argv) == 4 and argv[1] == "alert":
+        return alert(argv[2], argv[3])
+    if len(argv) == 4 and argv[1] == "clear":
+        return clear(argv[2], argv[3])
+    if len(argv) >= 3 and argv[1] == "resolve":
+        return resolve(argv[2], argv[3:])
+    if len(argv) == 3 and argv[1] == "send":
+        return 0 if muted() or deliver(argv[2]) else 1
+    if len(argv) == 2 and argv[1] == "test":
+        return 0 if deliver("monitoring test notification") else 1
+    print(
+        "usage: monitoring-notify alert|clear KEY MESSAGE | resolve PREFIX [KEY...]"
+        " | send MESSAGE | test",
+        file=sys.stderr,
+    )
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

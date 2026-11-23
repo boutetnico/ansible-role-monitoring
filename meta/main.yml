@@ -1,0 +1,23 @@
+---
+galaxy_info:
+  role_name: monitoring
+  namespace: boutetnico
+  author: Nicolas Boutet
+  description: Host checks for services, logs, disk, backups, posture and AWS, alerting to Slack or Telegram.
+  license: MIT
+  min_ansible_version: "2.10"
+  platforms:
+    - name: Ubuntu
+      versions:
+        - jammy
+        - noble
+    - name: Debian
+      versions:
+        - bookworm
+        - trixie
+  galaxy_tags:
+    - alerting
+    - monitoring
+    - slack
+    - telegram
+dependencies: []

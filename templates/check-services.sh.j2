@@ -1,0 +1,49 @@
+#!/bin/bash
+# {{ ansible_managed }}
+# Probes each service, retrying a few seconds apart so a restart does not alert.
+
+set -uo pipefail
+
+NOTIFY="{{ monitoring_scripts_path }}/monitoring-notify"
+
+probe() {
+    local name="$1" retries="$2" i
+    shift 2
+    for (( i = 1; i <= retries; i++ )); do
+        if "$@" > /dev/null 2>&1; then
+            "$NOTIFY" clear "services-${name}" "${name} is back up"
+            return
+        fi
+        [ "$i" -lt "$retries" ] && sleep 5
+    done
+    "$NOTIFY" alert "services-${name}" "${name} is down"
+}
+
+http_status() {
+    local expected="$1" auth="$2"
+    shift 2
+    if [ -n "$auth" ]; then
+        set -- -H @- "$@"
+    fi
+    [ "$(printf '%s\n' "$auth" | /usr/bin/curl -s -o /dev/null -w '%{http_code}' "$@")" = "$expected" ]
+}
+
+{% for svc in monitoring_service_checks %}
+{% set retries = svc.retries | default(1) | int %}
+{% if svc.unit is defined %}
+probe {{ svc.name | quote }} {{ retries }} /usr/bin/systemctl is-active --quiet {{ svc.unit | quote }}
+{% elif svc.port is defined %}
+probe {{ svc.name | quote }} {{ retries }} /usr/bin/timeout 3 /usr/bin/bash -c {{ ('echo > /dev/tcp/' ~ svc.host | default('127.0.0.1') ~ '/' ~ svc.port) | quote }}
+{% elif svc.socket is defined %}
+probe {{ svc.name | quote }} {{ retries }} /usr/bin/test -S {{ svc.socket | quote }}
+{% elif svc.url is defined %}
+{% set u = svc.url | urlsplit %}
+{% set args = ['--max-time', svc.max_time | default(5) | string] %}
+{% if svc.host_header is defined %}{% set _ = args.extend(['-H', 'Host: ' ~ svc.host_header]) %}{% endif %}
+{% if svc.https_forwarded | default(false) %}{% set _ = args.extend(['-H', 'X-Forwarded-Proto: https']) %}{% endif %}
+{% set auth = ('Authorization: Basic ' ~ (svc.username ~ ':' ~ svc.password) | b64encode) if svc.username is defined else '' %}
+{% if svc.resolve is defined %}{% set _ = args.extend(['--resolve', u.hostname ~ ':' ~ (u.port or (443 if u.scheme == 'https' else 80)) ~ ':' ~ svc.resolve]) %}{% endif %}
+{% if not (svc.validate_certs | default(true)) %}{% set _ = args.append('-k') %}{% endif %}
+probe {{ svc.name | quote }} {{ retries }} http_status {{ svc.status | default(200) | string | quote }} {{ auth | quote }} {% for a in args %}{{ a | quote }} {% endfor %}{{ svc.url | quote }}
+{% endif %}
+{% endfor %}

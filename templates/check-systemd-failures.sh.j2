@@ -1,0 +1,20 @@
+#!/bin/bash
+# {{ ansible_managed }}
+# Alerts once per failed systemd unit, and when it is no longer failed.
+
+set -euo pipefail
+
+NOTIFY="{{ monitoring_scripts_path }}/monitoring-notify"
+IGNORE={{ monitoring_systemd_failures_ignore | join('|') | quote }}
+
+units=$(/usr/bin/systemctl --failed --no-legend --plain | /usr/bin/awk '{print $1}')
+if [ -n "$IGNORE" ]; then
+    units=$(printf '%s\n' "$units" | /usr/bin/grep -vE "$IGNORE" || true)
+fi
+
+active=()
+for unit in $units; do
+    active+=("systemd-failures-${unit}")
+    "$NOTIFY" alert "systemd-failures-${unit}" "systemd unit ${unit} failed: systemctl status ${unit}, then systemctl reset-failed ${unit}"
+done
+"$NOTIFY" resolve systemd-failures- "${active[@]}"

@@ -1,0 +1,31 @@
+#!/bin/bash
+# {{ ansible_managed }}
+# Alerts on journal entries of priority err or worse written since the
+# previous run; a streak of errors alerts once.
+
+set -euo pipefail
+
+NOTIFY="{{ monitoring_scripts_path }}/monitoring-notify"
+STATE_DIR="{{ monitoring_state_dir }}/check-journal"
+CURSOR_FILE="${STATE_DIR}/cursor"
+IGNORE={{ monitoring_journal_watch.ignore | default([]) | join('|') | quote }}
+/usr/bin/mkdir -p "$STATE_DIR"
+
+if [ ! -f "$CURSOR_FILE" ]; then
+    /usr/bin/journalctl -n 1 --cursor-file="$CURSOR_FILE" --no-pager -q > /dev/null
+    exit 0
+fi
+
+entries=$(/usr/bin/journalctl --cursor-file="$CURSOR_FILE" --priority=err --no-pager -q)
+if [ -n "$IGNORE" ]; then
+    entries=$(printf '%s\n' "$entries" | /usr/bin/grep -avE "$IGNORE" || true)
+fi
+entries=$(printf '%s\n' "$entries" | /usr/bin/sed '/^$/d')
+
+if [ -n "$entries" ]; then
+    count=$(printf '%s\n' "$entries" | /usr/bin/wc -l)
+    "$NOTIFY" alert journal "${count} new journal error(s)
+$(printf '%s\n' "$entries" | /usr/bin/tail -20)"
+else
+    "$NOTIFY" clear journal ""
+fi

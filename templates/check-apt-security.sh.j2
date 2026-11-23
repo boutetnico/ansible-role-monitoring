@@ -1,0 +1,31 @@
+#!/bin/bash
+# {{ ansible_managed }}
+# Alerts when security updates are pending for packages excluded from
+# unattended-upgrades, which only a person will install.
+
+set -euo pipefail
+
+NOTIFY="{{ monitoring_scripts_path }}/monitoring-notify"
+PATTERNS={{ unattended_package_blacklist | default([]) | join(' ') | quote }}
+
+manual=""
+if [ -n "$PATTERNS" ]; then
+    while IFS= read -r pkg; do
+        [ -n "$pkg" ] || continue
+        for pattern in $PATTERNS; do
+            # shellcheck disable=SC2254
+            case "$pkg" in
+                $pattern)
+                    manual="${manual:+${manual}, }${pkg}"
+                    break
+                    ;;
+            esac
+        done
+    done < <(/usr/bin/apt list --upgradable 2>/dev/null | /usr/bin/grep -i security | /usr/bin/awk -F/ '{print $1}')
+fi
+
+if [ -n "$manual" ]; then
+    "$NOTIFY" alert apt-security "security updates pending, not installed automatically: ${manual}"
+else
+    "$NOTIFY" clear apt-security "no security update left for the manually upgraded packages"
+fi

@@ -1,0 +1,64 @@
+---
+monitoring_label: ""
+monitoring_scripts_path: /usr/local/bin
+monitoring_state_dir: /var/lib/monitoring
+
+monitoring_slack_webhook_url: ""
+monitoring_telegram_bot_token: ""
+monitoring_telegram_chat_id: ""
+
+monitoring_reminder_minutes: 0
+
+monitoring_maintenance_flag: /var/lib/monitoring/maintenance
+monitoring_maintenance_max_minutes: 0
+
+monitoring_intervals: {}
+
+monitoring_custom_checks: []
+
+monitoring_systemd_failures_enabled: true
+monitoring_systemd_failures_ignore: []
+
+monitoring_service_checks: []
+
+monitoring_file_checks: []
+
+monitoring_disk_usage_enabled: true
+monitoring_disk_usage_threshold: 85
+monitoring_disk_usage_excludes: []
+
+monitoring_apt_security_enabled: true
+
+monitoring_reboot_required_enabled: true
+
+monitoring_logfile_checks: []
+
+monitoring_journal_watch: {}
+
+monitoring_wp_admins_checks: []
+
+monitoring_failed_jobs_checks: []
+
+monitoring_horizon_failed_jobs_checks: []
+
+monitoring_posture_watch: {}
+
+monitoring_ip_pool_watch: {}
+
+monitoring_b2_backup_watch: {}
+
+monitoring_s3_backup_watch: {}
+
+monitoring_cpu_credits_watch: {}
+
+monitoring_alb_targets_watch: {}
+
+monitoring_ses_quota_watch: {}
+
+monitoring_sentry_events_watch: {}
+
+monitoring_es_logs_watch: {}
+
+monitoring_slow_query_watch: {}
+
+monitoring_table_fragmentation_watch: {}

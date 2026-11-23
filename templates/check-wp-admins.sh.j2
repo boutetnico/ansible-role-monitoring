@@ -1,0 +1,43 @@
+#!/bin/bash
+# {{ ansible_managed }}
+# Alerts when a WordPress site gains administrators. On a multisite network,
+# super admins live in <prefix>sitemeta and per-site grants in
+# <prefix>N_capabilities rows, so both are counted. Growth alerts once and
+# becomes the new baseline; removals are recorded silently.
+
+set -euo pipefail
+
+NOTIFY="{{ monitoring_scripts_path }}/monitoring-notify"
+STATE_DIR="{{ monitoring_state_dir }}/check-wp-admins"
+MYSQL=(/usr/bin/mysql --defaults-extra-file=/root/.my.cnf -N -B)
+/usr/bin/mkdir -p "$STATE_DIR"
+
+grown() {
+    local state="$1" count="$2" prev
+    prev=$(cat "$state" 2>/dev/null || true)
+    printf '%s' "$count" > "$state"
+    [[ "$prev" =~ ^[0-9]+$ ]] && [ "$count" -gt "$prev" ] && echo "$prev"
+}
+
+{% for check in monitoring_wp_admins_checks %}
+NAME={{ check.name | quote }}
+DATABASE={{ check.database | quote }}
+PREFIX={{ check.table_prefix | default('wp_') | quote }}
+PREFIX_ESC="${PREFIX//_/\\_}"
+{% if check.multisite | default(false) %}
+RAW=$("${MYSQL[@]}" -e "SELECT meta_value FROM ${PREFIX}sitemeta WHERE meta_key = 'site_admins' ORDER BY site_id LIMIT 1" "$DATABASE")
+COUNT=$(printf '%s' "$RAW" | /usr/bin/sed -nE 's/^a:([0-9]+):.*/\1/p')
+[[ "$COUNT" =~ ^[0-9]+$ ]] || { echo "no site_admins in ${DATABASE}, is it a multisite?" >&2; exit 1; }
+if PREV=$(grown "${STATE_DIR}/${NAME}.super" "$COUNT"); then
+    "$NOTIFY" send "WordPress super admins on ${NAME} went from ${PREV} to ${COUNT}: $(printf '%s' "$RAW" | /usr/bin/grep -oE '"[^"]+"' | /usr/bin/tr -d '"' | /usr/bin/paste -sd ',' -)"
+fi
+{% endif %}
+COUNT=$("${MYSQL[@]}" -e "SELECT COUNT(*) FROM ${PREFIX}usermeta WHERE meta_key LIKE '${PREFIX_ESC}%capabilities' AND meta_value LIKE '%administrator%'" "$DATABASE")
+[[ "$COUNT" =~ ^[0-9]+$ ]] || { echo "no administrator count from ${DATABASE}" >&2; exit 1; }
+if PREV=$(grown "${STATE_DIR}/${NAME}" "$COUNT"); then
+    LIST=$("${MYSQL[@]}" -e "SELECT CONCAT_WS(' ', u.user_login, u.user_email, m.meta_key) FROM ${PREFIX}users u JOIN ${PREFIX}usermeta m ON m.user_id = u.ID WHERE m.meta_key LIKE '${PREFIX_ESC}%capabilities' AND m.meta_value LIKE '%administrator%' ORDER BY u.user_registered DESC LIMIT 20" "$DATABASE")
+    "$NOTIFY" send "WordPress administrator grants on ${NAME} went from ${PREV} to ${COUNT}
+${LIST}"
+fi
+
+{% endfor %}

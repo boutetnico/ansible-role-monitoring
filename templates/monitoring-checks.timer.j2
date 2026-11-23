@@ -1,0 +1,10 @@
+# {{ ansible_managed }}
+[Unit]
+Description=Monitoring: dispatch all checks
+
+[Timer]
+OnCalendar=*-*-* *:*:00
+RandomizedDelaySec=5s
+
+[Install]
+WantedBy=timers.target

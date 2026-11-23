@@ -1,0 +1,122 @@
+---
+- name: Converge
+  hosts: all
+
+  vars:
+    monitoring_label: test
+    monitoring_reminder_minutes: 30
+    monitoring_intervals:
+      disk-usage: 10
+    monitoring_custom_checks:
+      - name: custom
+        src: "{{ playbook_dir }}/templates/check-custom.sh.j2"
+        every: 15
+    monitoring_systemd_failures_ignore:
+      - "^ignored\\.service$"
+    monitoring_service_checks:
+      - name: ssh-port
+        port: 22
+        retries: 2
+      - name: socket
+        socket: /run/test.sock
+      - name: unit
+        unit: cron
+      - name: http
+        url: http://app.example.com/up
+        resolve: 127.0.0.1
+        status: 204
+        host_header: app.example.com
+        username: probe
+        password: probe-secret
+    monitoring_file_checks:
+      - path: /etc/hostname
+      - path: /var/lib/app/data.mmdb
+        max_age_days: 30
+    monitoring_disk_usage_excludes:
+      - /snap
+    monitoring_logfile_checks:
+      - name: app
+        path: /var/log/test-app.log
+        pattern: "ERROR"
+        exclude: "expected noise"
+        ignore_case: false
+      - name: nginx
+        path: /var/log/test-nginx-*.log
+        glob: true
+        pattern: "\\[(error|crit)\\]"
+        entry_start: "^[0-9]+/[0-9]+/[0-9]+ "
+        min_matches: 2
+        context: 2
+    monitoring_journal_watch:
+      ignore:
+        - "\\[preauth\\]"
+    monitoring_wp_admins_checks:
+      - name: site
+        database: wordpress
+        multisite: true
+    monitoring_failed_jobs_checks:
+      - name: app
+        database: app
+    monitoring_horizon_failed_jobs_checks:
+      - name: app
+        redis_db: 2
+    monitoring_posture_watch:
+      listeners:
+        - 0.0.0.0:22
+      container_restarts: 3
+      php_ini:
+        expose_php: ""
+    monitoring_ip_pool_watch:
+      interface: eth0
+      ipv4: 1
+      ipv6: 0
+    monitoring_b2_backup_watch:
+      bucket: example-backups
+      folders:
+        - db
+      env:
+        B2_APPLICATION_KEY_ID: test
+        B2_APPLICATION_KEY: test
+    monitoring_s3_backup_watch:
+      region: us-east-1
+      checks:
+        - bucket: example-backups
+          prefix: db/
+          max_age_hours: 30
+          min_size: 1000
+    monitoring_cpu_credits_watch:
+      region: us-east-1
+      tag_key: env
+      tag_value: test
+    monitoring_alb_targets_watch:
+      region: us-east-1
+      credentials: instance-profile
+    monitoring_ses_quota_watch:
+      region: us-east-1
+    monitoring_sentry_events_watch:
+      api_url: https://sentry.example.com/api/0/organizations/example/stats_v2/
+      api_token: test-token
+    monitoring_es_logs_watch:
+      url: http://127.0.0.1:9200
+      rules:
+        - name: errors
+          title: Errors
+          type: frequency
+          index: "logs-*"
+          timeframe_minutes: 5
+          text_template: "{host.name}: {message}"
+          filter:
+            match:
+              level: error
+        - name: ingestion
+          title: Ingestion stopped
+          type: flatline
+          index: "logs-*"
+          timeframe_minutes: 30
+    monitoring_slow_query_watch:
+      slow_log_path: /var/log/mysql/mysql-slow.log
+    monitoring_table_fragmentation_watch:
+      min_free_mb: 512
+
+  roles:
+    - role: boutetnico.monitoring

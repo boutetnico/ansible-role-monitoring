@@ -1,0 +1,24 @@
+---
+monitoring_registry:
+  - {name: systemd-failures, src: check-systemd-failures.sh.j2, every: 1, enabled: "{{ monitoring_systemd_failures_enabled }}"}
+  - {name: services, src: check-services.sh.j2, every: 1, enabled: "{{ monitoring_service_checks | length > 0 }}"}
+  - {name: journal, src: check-journal.sh.j2, every: 1, enabled: "{{ monitoring_journal_watch | length > 0 }}"}
+  - {name: es-logs, src: check-es-logs.py.j2, every: 1, enabled: "{{ monitoring_es_logs_watch | length > 0 }}"}
+  - {name: horizon-failed-jobs, src: check-horizon-failed-jobs.py.j2, every: 1, enabled: "{{ monitoring_horizon_failed_jobs_checks | length > 0 }}"}
+  - {name: alb-targets, src: check-alb-targets.py.j2, every: 1, enabled: "{{ monitoring_alb_targets_watch | length > 0 }}"}
+  - {name: ip-pool, src: check-ip-pool.sh.j2, every: 1, enabled: "{{ monitoring_ip_pool_watch | length > 0 }}"}
+  - {name: logfiles, src: check-logfiles.sh.j2, every: 5, enabled: "{{ monitoring_logfile_checks | length > 0 }}"}
+  - {name: disk-usage, src: check-disk-usage.sh.j2, every: 5, enabled: "{{ monitoring_disk_usage_enabled }}"}
+  - {name: wp-admins, src: check-wp-admins.sh.j2, every: 5, enabled: "{{ monitoring_wp_admins_checks | length > 0 }}"}
+  - {name: failed-jobs, src: check-failed-jobs.sh.j2, every: 5, enabled: "{{ monitoring_failed_jobs_checks | length > 0 }}"}
+  - {name: sentry-events, src: check-sentry-events.sh.j2, every: 5, enabled: "{{ monitoring_sentry_events_watch | length > 0 }}"}
+  - {name: slow-queries, src: check-slow-queries.py.j2, every: 5, enabled: "{{ monitoring_slow_query_watch | length > 0 }}"}
+  - {name: cpu-credits, src: check-cpu-credits.py.j2, every: 5, enabled: "{{ monitoring_cpu_credits_watch | length > 0 }}"}
+  - {name: s3-backups, src: check-s3-backups.py.j2, every: 5, enabled: "{{ monitoring_s3_backup_watch | length > 0 }}"}
+  - {name: ses-quota, src: check-ses-quota.py.j2, every: 5, enabled: "{{ monitoring_ses_quota_watch | length > 0 }}"}
+  - {name: b2-backups, src: check-b2-backups.sh.j2, every: 60, enabled: "{{ monitoring_b2_backup_watch | length > 0 }}"}
+  - {name: posture, src: check-posture.sh.j2, every: 60, enabled: "{{ monitoring_posture_watch | length > 0 }}"}
+  - {name: apt-security, src: check-apt-security.sh.j2, every: 1440, enabled: "{{ monitoring_apt_security_enabled }}"}
+  - {name: reboot-required, src: check-reboot-required.sh.j2, every: 1440, enabled: "{{ monitoring_reboot_required_enabled }}"}
+  - {name: files, src: check-files.sh.j2, every: 1440, enabled: "{{ monitoring_file_checks | length > 0 }}"}
+  - {name: table-fragmentation, src: check-table-fragmentation.sh.j2, every: 1440, enabled: "{{ monitoring_table_fragmentation_watch | length > 0 }}"}

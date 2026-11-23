@@ -1,0 +1,116 @@
+#!/usr/bin/env python3
+# {{ ansible_managed }}
+# Alert on load balancer targets that stay unhealthy for CONSECUTIVE runs, so a
+# deploy blip does not page. With a tag set, only target groups carrying it are
+# watched.
+
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+import boto3
+from botocore.credentials import InstanceMetadataFetcher, InstanceMetadataProvider
+
+NOTIFY = {{ (monitoring_scripts_path ~ '/monitoring-notify') | to_json }}
+STATE_DIR = Path({{ (monitoring_state_dir ~ '/check-alb-targets') | to_json }})
+REGION = {{ monitoring_alb_targets_watch.region | default('') | to_json }}
+CREDENTIALS = {{ monitoring_alb_targets_watch.credentials | default('default') | to_json }}
+TAG_KEY = {{ monitoring_alb_targets_watch.tag_key | default('') | to_json }}
+TAG_VALUE = {{ monitoring_alb_targets_watch.tag_value | default('') | to_json }}
+CONSECUTIVE = {{ monitoring_alb_targets_watch.consecutive | default(2) | int }}
+
+
+def notify(*args):
+    if subprocess.run([NOTIFY, *args], check=False).returncode != 0:
+        print(f"monitoring-notify {args[0]} failed", file=sys.stderr)
+
+
+def aws_session():
+    if CREDENTIALS == "default":
+        return boto3.Session(region_name=REGION or None)
+    if CREDENTIALS != "instance-profile":
+        raise ValueError(f"unknown credentials mode {CREDENTIALS!r}")
+    provider = InstanceMetadataProvider(
+        iam_role_fetcher=InstanceMetadataFetcher(timeout=2, num_attempts=2)
+    )
+    creds = provider.load()
+    if creds is None:
+        raise RuntimeError("no instance profile credentials")
+    creds = creds.get_frozen_credentials()
+    return boto3.Session(
+        aws_access_key_id=creds.access_key,
+        aws_secret_access_key=creds.secret_key,
+        aws_session_token=creds.token,
+        region_name=REGION or None,
+    )
+
+
+def watched_target_groups(elb):
+    groups = [
+        tg
+        for page in elb.get_paginator("describe_target_groups").paginate()
+        for tg in page["TargetGroups"]
+    ]
+    if not TAG_KEY:
+        return groups
+    watched = []
+    for i in range(0, len(groups), 20):
+        batch = {tg["TargetGroupArn"]: tg for tg in groups[i : i + 20]}
+        for desc in elb.describe_tags(ResourceArns=list(batch))["TagDescriptions"]:
+            tags = {t["Key"]: t["Value"] for t in desc["Tags"]}
+            if tags.get(TAG_KEY) == TAG_VALUE:
+                watched.append(batch[desc["ResourceArn"]])
+    return watched
+
+
+def instance_names(ec2, ids):
+    names = {}
+    if not ids:
+        return names
+    for page in ec2.get_paginator("describe_instances").paginate(InstanceIds=ids):
+        for reservation in page["Reservations"]:
+            for instance in reservation["Instances"]:
+                tags = {t["Key"]: t["Value"] for t in instance.get("Tags", [])}
+                names[instance["InstanceId"]] = tags.get("Name", instance["InstanceId"])
+    return names
+
+
+try:
+    session = aws_session()
+    elb = session.client("elbv2")
+    unhealthy = {}
+    for tg in watched_target_groups(elb):
+        health = elb.describe_target_health(TargetGroupArn=tg["TargetGroupArn"])
+        for desc in health["TargetHealthDescriptions"]:
+            if desc["TargetHealth"]["State"] == "unhealthy":
+                key = (tg["TargetGroupName"], desc["Target"]["Id"])
+                unhealthy[key] = desc["TargetHealth"].get("Reason", "unknown")
+    names = instance_names(
+        session.client("ec2"),
+        sorted({t for _, t in unhealthy if t.startswith("i-")}),
+    )
+except Exception as e:
+    print(f"aws query failed: {e}", file=sys.stderr)
+    sys.exit(1)
+
+STATE_DIR.mkdir(parents=True, exist_ok=True)
+active = []
+seen = set()
+for (group, target), reason in sorted(unhealthy.items()):
+    key = re.sub(r"[^A-Za-z0-9._-]", "_", f"alb-targets-{group}-{target}")
+    state = STATE_DIR / key
+    seen.add(state.name)
+    count = int(state.read_text().split()[0]) + 1 if state.exists() else 1
+    state.write_text(str(count))
+    if count >= CONSECUTIVE:
+        active.append(key)
+        notify(
+            "alert", key, f"{group}: {names.get(target, target)} unhealthy ({reason})"
+        )
+
+for state in STATE_DIR.iterdir():
+    if state.name not in seen:
+        state.unlink()
+
+notify("resolve", "alb-targets-", *active)

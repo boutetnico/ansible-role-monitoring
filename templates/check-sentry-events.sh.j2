@@ -1,0 +1,37 @@
+#!/bin/bash
+# {{ ansible_managed }}
+# Alerts when a self-hosted Sentry accepted no event over the API query window,
+# listing unhealthy compose containers and recent relay logs.
+
+set -euo pipefail
+
+NOTIFY="{{ monitoring_scripts_path }}/monitoring-notify"
+PROJECT={{ monitoring_sentry_events_watch.compose_project | default('sentry-self-hosted') | quote }}
+
+response=$(printf 'Authorization: Bearer %s\n' {{ monitoring_sentry_events_watch.api_token | quote }} \
+    | /usr/bin/curl -sf --max-time 10 -H @- {{ monitoring_sentry_events_watch.api_url | quote }})
+accepted=$(printf '%s' "$response" | /usr/bin/python3 -c '
+import json, sys
+for group in json.load(sys.stdin).get("groups", []):
+    if group.get("by", {}).get("outcome") == "accepted":
+        print(int(group.get("totals", {}).get("sum(quantity)", 0)))
+        break
+else:
+    print(0)
+')
+
+if [ "$accepted" -gt 0 ]; then
+    "$NOTIFY" clear sentry-events "Sentry accepts events again"
+    exit 0
+fi
+
+unhealthy=$(/usr/bin/docker ps -a \
+    --filter "label=com.docker.compose.project=${PROJECT}" \
+    --filter "label=com.docker.compose.oneoff=False" \
+    --format '{% raw %}{{.Names}}: {{.Status}}{% endraw %}' 2>&1 \
+    | { /usr/bin/grep -Ev ': Up [^(]*(\(healthy\))?$' || true; })
+relay=$(/usr/bin/docker logs --since 5m "${PROJECT}-relay-1" 2>&1 \
+    | { /usr/bin/grep -v 'Health check probe' || true; } | /usr/bin/tail -n 3 | /usr/bin/cut -c 1-300)
+"$NOTIFY" alert sentry-events "Sentry accepted no event in the query window
+unhealthy containers: ${unhealthy:-none}
+relay: ${relay:-no recent errors}"

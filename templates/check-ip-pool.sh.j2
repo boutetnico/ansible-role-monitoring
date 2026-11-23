@@ -1,0 +1,19 @@
+#!/bin/bash
+# {{ ansible_managed }}
+# Alerts when an interface holds fewer addresses than expected.
+
+set -euo pipefail
+
+NOTIFY="{{ monitoring_scripts_path }}/monitoring-notify"
+IFACE={{ monitoring_ip_pool_watch.interface | default('eth0') | quote }}
+WANT4={{ monitoring_ip_pool_watch.ipv4 | default(1) | int }}
+WANT6={{ monitoring_ip_pool_watch.ipv6 | default(1) | int }}
+
+have4=$(/usr/sbin/ip -4 -o addr show dev "$IFACE" scope global | /usr/bin/wc -l)
+have6=$(/usr/sbin/ip -6 -o addr show dev "$IFACE" scope global | /usr/bin/wc -l)
+
+if [ "$have4" -lt "$WANT4" ] || [ "$have6" -lt "$WANT6" ]; then
+    "$NOTIFY" alert ip-pool "${IFACE} has ${have4} IPv4 and ${have6} IPv6 addresses, expected ${WANT4} and ${WANT6}"
+else
+    "$NOTIFY" clear ip-pool "${IFACE} has its expected addresses again"
+fi

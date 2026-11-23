@@ -1,0 +1,95 @@
+---
+- name: Ensure check names and SQL identifiers are safe
+  ansible.builtin.assert:
+    fail_msg: Check names must match ^[A-Za-z0-9_-]+$, databases, tables and table prefixes ^[A-Za-z0-9_$]+$.
+    quiet: true
+    that:
+      - (monitoring_custom_checks + monitoring_service_checks + monitoring_logfile_checks + monitoring_wp_admins_checks
+        + monitoring_failed_jobs_checks + monitoring_horizon_failed_jobs_checks) | map(attribute='name')
+        | reject('match', '^[A-Za-z0-9_-]+$') | list | length == 0
+      - (monitoring_wp_admins_checks + monitoring_failed_jobs_checks) | map(attribute='database')
+        | reject('match', '^[A-Za-z0-9_$]+$') | list | length == 0
+      - monitoring_failed_jobs_checks | map(attribute='table', default='failed_jobs')
+        | reject('match', '^[A-Za-z0-9_$]+$') | list | length == 0
+      - monitoring_wp_admins_checks | map(attribute='table_prefix', default='wp_')
+        | reject('match', '^[A-Za-z0-9_$]+$') | list | length == 0
+
+- name: Ensure the state directories exist
+  ansible.builtin.file:
+    group: root
+    mode: "0700"
+    owner: root
+    path: "{{ item }}"
+    state: directory
+  loop:
+    - "{{ monitoring_state_dir }}"
+    - "{{ monitoring_state_dir }}/alerts"
+
+- name: Ensure the notifier is installed
+  ansible.builtin.template:
+    dest: "{{ monitoring_scripts_path }}/monitoring-notify"
+    group: root
+    mode: "0700"
+    owner: root
+    src: monitoring-notify.py.j2
+  no_log: true
+
+- name: Ensure the enabled checks are installed
+  ansible.builtin.template:
+    dest: "{{ monitoring_scripts_path }}/check-{{ item.name }}"
+    group: root
+    mode: "0700"
+    owner: root
+    src: "{{ item.src }}"
+  loop: "{{ monitoring_registry | selectattr('enabled', 'truthy') | list }}"
+  loop_control:
+    label: "{{ item.name }}"
+  no_log: true
+
+- name: Ensure the custom checks are installed
+  ansible.builtin.template:
+    dest: "{{ monitoring_scripts_path }}/check-{{ item.name }}"
+    group: root
+    mode: "0700"
+    owner: root
+    src: "{{ item.src }}"
+  loop: "{{ monitoring_custom_checks }}"
+  loop_control:
+    label: "{{ item.name }}"
+  no_log: true
+
+- name: Ensure the disabled checks are removed
+  ansible.builtin.file:
+    path: "{{ monitoring_scripts_path }}/check-{{ item.name }}"
+    state: absent
+  loop: "{{ monitoring_registry | rejectattr('enabled', 'truthy') | list }}"
+  loop_control:
+    label: "{{ item.name }}"
+
+- name: Ensure the dispatcher is installed
+  ansible.builtin.template:
+    dest: "{{ monitoring_scripts_path }}/monitoring-dispatch"
+    group: root
+    mode: "0700"
+    owner: root
+    src: monitoring-dispatch.sh.j2
+
+- name: Ensure the systemd units are installed
+  ansible.builtin.template:
+    dest: "/etc/systemd/system/{{ item }}"
+    group: root
+    mode: "0644"
+    owner: root
+    src: "{{ item }}.j2"
+  loop:
+    - monitoring-checks.service
+    - monitoring-checks.timer
+  notify: Reload systemd
+
+- name: Ensure the timer is enabled and started
+  ansible.builtin.systemd:
+    daemon_reload: true
+    enabled: true
+    name: monitoring-checks.timer
+    state: started
+  when: ansible_facts['service_mgr'] == 'systemd'

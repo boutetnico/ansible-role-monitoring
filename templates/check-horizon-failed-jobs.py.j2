@@ -1,0 +1,104 @@
+#!/usr/bin/env python3
+# {{ ansible_managed }}
+# Alert when the Laravel Horizon failed jobs count (ZCARD <prefix>failed_jobs)
+# grows since the last run, and when it drops back to zero.
+
+import json
+import socket
+import subprocess
+import sys
+from pathlib import Path
+
+NOTIFY = {{ (monitoring_scripts_path ~ '/monitoring-notify') | to_json }}
+STATE_DIR = Path({{ (monitoring_state_dir ~ '/check-horizon-failed-jobs') | to_json }})
+CHECKS = json.loads(
+    r"""{{ monitoring_horizon_failed_jobs_checks | to_json }}""",
+)
+
+
+def notify(*args):
+    if subprocess.run([NOTIFY, *args], check=False).returncode != 0:
+        print(f"monitoring-notify {args[0]} failed", file=sys.stderr)
+        return False
+    return True
+
+
+def resp_encode(*parts):
+    out = f"*{len(parts)}\r\n".encode()
+    for p in parts:
+        b = p.encode() if isinstance(p, str) else p
+        out += f"${len(b)}\r\n".encode() + b + b"\r\n"
+    return out
+
+
+def read_reply(sock):
+    buf = b""
+    while b"\r\n" not in buf:
+        chunk = sock.recv(64)
+        if not chunk:
+            break
+        buf += chunk
+    line, _, rest = buf.partition(b"\r\n")
+    return line.decode(), rest
+
+
+def command(sock, *parts):
+    sock.sendall(resp_encode(*parts))
+    line, _ = read_reply(sock)
+    if line.startswith("-"):
+        raise RuntimeError(f"{parts[0]} failed: {line[1:]}")
+    return line
+
+
+def redis_zcard(host, port, db, password, key, timeout=5):
+    with socket.create_connection((host, port), timeout=timeout) as s:
+        if password:
+            command(s, "AUTH", password)
+        if db != 0:
+            command(s, "SELECT", str(db))
+        line = command(s, "ZCARD", key)
+    if not line.startswith(":"):
+        raise RuntimeError(f"ZCARD unexpected reply: {line!r}")
+    return int(line[1:])
+
+
+STATE_DIR.mkdir(parents=True, exist_ok=True)
+failed = []
+for check in CHECKS:
+    name = check["name"]
+    state_file = STATE_DIR / name
+    try:
+        count = redis_zcard(
+            check.get("redis_host", "127.0.0.1"),
+            check.get("redis_port", 6379),
+            check.get("redis_db", 0),
+            check.get("redis_password", ""),
+            check.get("prefix", "horizon:") + "failed_jobs",
+        )
+    except Exception as e:
+        failed.append(name)
+        print(f"check {name}: {e}", file=sys.stderr)
+        continue
+
+    previous = None
+    if state_file.exists():
+        try:
+            previous = int(state_file.read_text().strip())
+        except ValueError:
+            previous = None
+
+    delivered = True
+    if previous is not None and count > previous:
+        delivered = notify(
+            "send",
+            f"{count - previous} new Horizon failed job(s) for {name} "
+            f"({count} total)",
+        )
+    elif previous and count == 0:
+        delivered = notify("send", f"Horizon {name} failed jobs cleared")
+    if delivered:
+        state_file.write_text(str(count))
+
+if failed:
+    print(f"redis query failed for {', '.join(failed)}", file=sys.stderr)
+    sys.exit(1)

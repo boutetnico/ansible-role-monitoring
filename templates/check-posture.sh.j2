@@ -1,0 +1,61 @@
+#!/bin/bash
+# {{ ansible_managed }}
+# Alerts per deviation from the expected host posture: unexpected TCP
+# listeners, containers in a restart loop and drifted php-fpm settings.
+
+set -euo pipefail
+
+NOTIFY="{{ monitoring_scripts_path }}/monitoring-notify"
+STATE_DIR="{{ monitoring_state_dir }}/check-posture"
+/usr/bin/mkdir -p "$STATE_DIR"
+{% set watch = monitoring_posture_watch %}
+
+deviations() {
+{% if watch.listeners | default([]) %}
+    local listeners={{ watch.listeners | join(' ') | quote }} addr
+    local allowed=" ${listeners} "
+    for addr in $(/usr/bin/ss -tlnH | /usr/bin/awk '{print $4}' | LC_ALL=C /usr/bin/sort -u); do
+        case "$addr" in 127.*|\[::1\]:*) continue ;; esac
+        case "$allowed" in *" $addr "*) continue ;; esac
+        echo "${addr} is listening but not allowed"
+    done
+{% endif %}
+{% if watch.container_restarts | default(0) | int > 0 %}
+    local state="${STATE_DIR}/container-restarts" now name cur old
+    if command -v docker > /dev/null; then
+        now=$(/usr/bin/docker ps -aq | /usr/bin/xargs -r /usr/bin/docker inspect \
+            --format '{% raw %}{{.Name}} {{.RestartCount}}{% endraw %}' | /usr/bin/sed 's|^/||' | LC_ALL=C /usr/bin/sort)
+        if [ -f "$state" ]; then
+            while read -r name cur; do
+                [ -n "$name" ] || continue
+                old=$(/usr/bin/awk -v n="$name" '$1 == n { print $2 }' "$state")
+                [ -n "$old" ] || continue
+                if [ $((cur - old)) -ge {{ watch.container_restarts | int }} ]; then
+                    echo "container ${name} restarted $((cur - old)) times since the last check"
+                fi
+            done <<< "$now"
+        fi
+        printf '%s\n' "$now" > "$state"
+    fi
+{% endif %}
+{% if watch.php_ini | default({}) %}
+{% set php = watch.php_version | default('8.4') %}
+    local actual
+{% for key, expected in watch.php_ini | dictsort %}
+    actual=$(PHP_INI_SCAN_DIR=/etc/php/{{ php }}/fpm/conf.d/ /usr/bin/php{{ php }} \
+        -c /etc/php/{{ php }}/fpm/php.ini -d error_reporting=0 \
+        -r "echo ini_get('{{ key }}');" 2> /dev/null || echo unreadable)
+    [ "$actual" = {{ expected | string | quote }} ] || echo "php-fpm {{ key }} is '${actual}', expected '{{ expected }}'"
+{% endfor %}
+{% endif %}
+    true
+}
+
+active=()
+while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    key="posture-$(printf '%s' "$line" | /usr/bin/md5sum | /usr/bin/cut -c1-12)"
+    active+=("$key")
+    "$NOTIFY" alert "$key" "posture: ${line}"
+done < <(deviations)
+"$NOTIFY" resolve posture- "${active[@]}"
