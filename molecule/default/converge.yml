@@ -5,6 +5,11 @@
   vars:
     monitoring_label: test
     monitoring_reminder_minutes: 30
+    monitoring_vonage_application_id: test-application
+    monitoring_sms_to:
+      - "+33600000000"
+    monitoring_sms_keys:
+      - "^sms-never-matched$"
     monitoring_intervals:
       disk-usage: 10
     monitoring_custom_checks:

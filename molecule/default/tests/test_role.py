@@ -68,6 +68,16 @@ def test_secrets_are_not_passed_as_arguments(host):
     assert "-H @-" in sentry
 
 
+def test_notifier_pages_only_matching_keys(host):
+    notify = host.file(f"{BIN}/monitoring-notify").content_string
+    assert "test-application" in notify
+    assert "api.nexmo.com/v1/messages" in notify
+    assert not host.file("/var/lib/monitoring/vonage.key").exists
+    assert host.run(f"{BIN}/monitoring-notify alert other-key down").rc == 0
+    assert host.file(f"{ALERTS}/other-key").exists
+    assert host.run(f"{BIN}/monitoring-notify clear other-key up").rc == 0
+
+
 def test_dispatcher_runs_checks_on_their_interval(host):
     script = host.file(f"{BIN}/monitoring-dispatch")
     assert script.contains("run logfiles 5")
@@ -193,3 +203,30 @@ def test_mysql_replication_check(host):
     replica("Yes", 10)
     assert not host.file(lag).exists
     host.run("rm -f /usr/bin/mysql")
+
+
+def test_notifier_signs_a_valid_vonage_token(host):
+    key = "/var/lib/monitoring/vonage.key"
+    host.run(
+        f"openssl genpkey -algorithm RSA -out {key} && openssl pkey -in {key} -pubout -out /tmp/vonage.pub"
+    )
+    result = host.run(
+        "python3 -c 'import runpy; "
+        f'n = runpy.run_path("{BIN}/monitoring-notify", run_name="n"); '
+        'print(n["vonage_token"]())\''
+    )
+    host.run(f"rm -f {key}")
+    assert result.rc == 0, result.stderr
+    header, claims, signature = result.stdout.strip().split(".")
+    check = host.run(
+        "python3 - <<'EOF'\n"
+        "import base64, json, subprocess\n"
+        f"h, c, s = {header!r}, {claims!r}, {signature!r}\n"
+        "pad = lambda x: x + '=' * (-len(x) % 4)\n"
+        "assert json.loads(base64.urlsafe_b64decode(pad(c)))['application_id'] == 'test-application'\n"
+        "open('/tmp/sig', 'wb').write(base64.urlsafe_b64decode(pad(s)))\n"
+        "subprocess.run(['openssl', 'dgst', '-sha256', '-verify', '/tmp/vonage.pub', '-signature', '/tmp/sig'],"
+        " input=f'{h}.{c}'.encode(), check=True)\n"
+        "EOF"
+    )
+    assert check.rc == 0, check.stdout + check.stderr

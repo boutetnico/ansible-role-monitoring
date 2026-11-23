@@ -1,22 +1,31 @@
 #!/usr/bin/env python3
 # {{ ansible_managed }}
-# Delivers alerts to Slack and/or Telegram.
+# Delivers alerts to Slack and/or Telegram, and selected alerts by SMS.
 #
 #   monitoring-notify alert KEY MESSAGE   first occurrence, then reminders
 #   monitoring-notify clear KEY MESSAGE   recovery, only if KEY was alerting;
 #                                         an empty MESSAGE clears silently
 #   monitoring-notify resolve PREFIX [KEY...]  clear every PREFIX* key not listed
 #   monitoring-notify send MESSAGE        one-off message
+#   monitoring-notify sms TEXT NUMBER...  SMS to the given numbers
 #   monitoring-notify test                test message
+#
+# Alerts whose key matches an SMS pattern also send an SMS through the Vonage
+# Messages API when raised and when cleared, never as a reminder. SMS failures
+# are only logged. Requests carry a short-lived JWT signed with the Vonage
+# application's private key, so no account secret is needed.
 #
 # An alert is recorded only once delivered, so a failed delivery is retried on
 # the next run. While the maintenance flag is fresh nothing is sent or recorded.
 
+import base64
 import json
 import re
 import socket
+import subprocess
 import sys
 import time
+import uuid
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -26,6 +35,11 @@ SLACK_WEBHOOK_URL = {{ monitoring_slack_webhook_url | to_json }}
 TELEGRAM_BOT_TOKEN = {{ monitoring_telegram_bot_token | to_json }}
 TELEGRAM_CHAT_ID = {{ monitoring_telegram_chat_id | string | to_json }}
 LABEL = {{ monitoring_label | to_json }}
+VONAGE_APPLICATION_ID = {{ monitoring_vonage_application_id | to_json }}
+VONAGE_KEY = Path({{ (monitoring_state_dir ~ '/vonage.key') | to_json }})
+SMS_FROM = {{ monitoring_sms_from | string | to_json }}
+SMS_TO = {{ monitoring_sms_to | map('string') | list | to_json }}
+SMS_KEYS = [re.compile(p) for p in {{ monitoring_sms_keys | to_json }}]
 REMINDER_SECONDS = {{ monitoring_reminder_minutes | int }} * 60
 MAINTENANCE_FLAG = Path({{ monitoring_maintenance_flag | to_json }})
 MAINTENANCE_MAX_SECONDS = {{ monitoring_maintenance_max_minutes | int }} * 60
@@ -45,16 +59,84 @@ def post(url, data, headers):
     req = urllib.request.Request(url, data=data, headers=headers, method="POST")
     try:
         with urllib.request.urlopen(req, timeout=15) as resp:
-            return resp.status == 200
+            return 200 <= resp.status < 300
     except (urllib.error.URLError, OSError) as e:
         host = urllib.parse.urlsplit(url).netloc
-        print(f"delivery to {host} failed: {e}", file=sys.stderr)
+        detail = ""
+        if isinstance(e, urllib.error.HTTPError):
+            detail = " " + e.read(500).decode(errors="replace").strip()
+        print(f"delivery to {host} failed: {e}{detail}", file=sys.stderr)
         return False
 
 
-def deliver(text):
+def headline(text):
     prefix = f"[{LABEL}] " if LABEL else ""
-    text = f"{prefix}{socket.gethostname()}: {text}"
+    return f"{prefix}{socket.gethostname()}: {text}"
+
+
+def b64url(data):
+    return base64.urlsafe_b64encode(data).rstrip(b"=").decode()
+
+
+def vonage_token():
+    now = int(time.time())
+    header = b64url(json.dumps({"alg": "RS256", "typ": "JWT"}).encode())
+    claims = {
+        "application_id": VONAGE_APPLICATION_ID,
+        "exp": now + 300,
+        "iat": now,
+        "jti": str(uuid.uuid4()),
+    }
+    signing_input = f"{header}.{b64url(json.dumps(claims).encode())}"
+    signature = subprocess.run(
+        ["openssl", "dgst", "-sha256", "-sign", str(VONAGE_KEY)],
+        input=signing_input.encode(),
+        capture_output=True,
+        check=True,
+    ).stdout
+    return f"{signing_input}.{b64url(signature)}"
+
+
+def sms(text, numbers):
+    if not (VONAGE_APPLICATION_ID and VONAGE_KEY.exists()):
+        print("SMS is not configured", file=sys.stderr)
+        return False
+    try:
+        token = vonage_token()
+    except (OSError, subprocess.CalledProcessError) as e:
+        print(f"cannot sign the Vonage token: {e}", file=sys.stderr)
+        return False
+    ok = True
+    for to in numbers:
+        ok = (
+            post(
+                "https://api.nexmo.com/v1/messages",
+                json.dumps(
+                    {
+                        "channel": "sms",
+                        "from": SMS_FROM,
+                        "message_type": "text",
+                        "text": text[:160],
+                        "to": to.lstrip("+"),
+                    }
+                ).encode(),
+                {
+                    "Authorization": f"Bearer {token}",
+                    "Content-Type": "application/json",
+                },
+            )
+            and ok
+        )
+    return ok
+
+
+def page(key, text):
+    if SMS_TO and any(p.search(key) for p in SMS_KEYS):
+        sms(headline(text), SMS_TO)
+
+
+def deliver(text):
+    text = headline(text)
     if len(text) > MAX_LENGTH:
         text = text[:MAX_LENGTH] + "\n…truncated"
     ok = True
@@ -100,6 +182,8 @@ def alert(key, message):
         return 0
     if not deliver(f"{message} (still failing)" if reminder else message):
         return 1
+    if not reminder:
+        page(key, message)
     path.write_text(message)
     return 0
 
@@ -108,8 +192,10 @@ def clear(key, message):
     path = state_file(key)
     if not path.exists():
         return 0
-    if message and not muted() and not deliver(message):
-        return 1
+    if message and not muted():
+        if not deliver(message):
+            return 1
+        page(key, message)
     path.unlink()
     return 0
 
@@ -133,11 +219,13 @@ def main(argv):
         return resolve(argv[2], argv[3:])
     if len(argv) == 3 and argv[1] == "send":
         return 0 if muted() or deliver(argv[2]) else 1
+    if len(argv) >= 4 and argv[1] == "sms":
+        return 0 if muted() or sms(headline(argv[2]), argv[3:]) else 1
     if len(argv) == 2 and argv[1] == "test":
         return 0 if deliver("monitoring test notification") else 1
     print(
         "usage: monitoring-notify alert|clear KEY MESSAGE | resolve PREFIX [KEY...]"
-        " | send MESSAGE | test",
+        " | send MESSAGE | sms TEXT NUMBER... | test",
         file=sys.stderr,
     )
     return 2

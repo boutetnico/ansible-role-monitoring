@@ -25,6 +25,23 @@
     - "{{ monitoring_state_dir }}"
     - "{{ monitoring_state_dir }}/alerts"
 
+- name: Ensure the Vonage private key is installed
+  ansible.builtin.copy:
+    content: "{{ monitoring_vonage_private_key }}"
+    dest: "{{ monitoring_state_dir }}/vonage.key"
+    group: root
+    mode: "0600"
+    owner: root
+  diff: false
+  no_log: true
+  when: monitoring_vonage_private_key | length > 0
+
+- name: Ensure no Vonage private key is left without one configured
+  ansible.builtin.file:
+    path: "{{ monitoring_state_dir }}/vonage.key"
+    state: absent
+  when: monitoring_vonage_private_key | length == 0
+
 - name: Ensure the notifier is installed
   ansible.builtin.template:
     dest: "{{ monitoring_scripts_path }}/monitoring-notify"

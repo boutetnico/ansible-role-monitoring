@@ -7,6 +7,12 @@ monitoring_slack_webhook_url: ""
 monitoring_telegram_bot_token: ""
 monitoring_telegram_chat_id: ""
 
+monitoring_vonage_application_id: ""
+monitoring_vonage_private_key: ""
+monitoring_sms_from: Monitoring
+monitoring_sms_to: []
+monitoring_sms_keys: []
+
 monitoring_reminder_minutes: 0
 
 monitoring_maintenance_flag: /var/lib/monitoring/maintenance

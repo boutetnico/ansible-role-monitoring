@@ -17,6 +17,7 @@ Ansible 2.10 or newer, systemd and Python 3 on the host. Some checks need more:
 - MySQL checks: root access through `/root/.my.cnf`.
 - B2 backups: the `b2` CLI.
 - Sentry intake: Docker, for the container report.
+- SMS: `openssl`, to sign the Vonage token.
 
 Supported Platforms
 -------------------
@@ -37,6 +38,11 @@ Role Variables
 | monitoring_slack_webhook_url          | no       | `""`                              | string  | Slack incoming webhook.                                        |
 | monitoring_telegram_bot_token         | no       | `""`                              | string  | Telegram needs both the token and the chat id.                 |
 | monitoring_telegram_chat_id           | no       | `""`                              | string  |                                                                |
+| monitoring_vonage_application_id      | no       | `""`                              | string  | Vonage application with the Messages capability.               |
+| monitoring_vonage_private_key         | no       | `""`                              | string  | That application's private key (PEM), signs short-lived JWTs.  |
+| monitoring_sms_from                   | no       | `Monitoring`                      | string  | Sender name.                                                   |
+| monitoring_sms_to                     | no       | `[]`                              | list    | International format without `+`, e.g. `33612345678`.         |
+| monitoring_sms_keys                   | no       | `[]`                              | list    | Alert key regexes that also send an SMS, e.g. `^services-`.    |
 | monitoring_reminder_minutes           | yes      | `0`                               | int     | Repeat an ongoing alert this often; 0 alerts once.             |
 | monitoring_maintenance_flag           | yes      | `/var/lib/monitoring/maintenance` | string  | While this file exists, nothing is sent.                       |
 | monitoring_maintenance_max_minutes    | yes      | `0`                               | int     | A flag older than this is ignored; 0 never expires.            |
@@ -114,7 +120,7 @@ Example Playbook
 Usage
 -----
 
-`monitoring-notify test` sends a test message. `monitoring-notify alert|clear KEY MESSAGE`, `resolve PREFIX [KEY...]` and `send MESSAGE` are what the checks call, and what custom checks should call too.
+`monitoring-notify test` sends a test message. `monitoring-notify alert|clear KEY MESSAGE`, `resolve PREFIX [KEY...]` and `send MESSAGE` are what the checks call, and what custom checks should call too. An alert whose key matches `monitoring_sms_keys` also sends an SMS when raised and when cleared; `monitoring-notify sms TEXT NUMBER...` sends one directly. SMS go through the Vonage Messages API, authenticated with a JWT signed by the application's private key, so the account API secret never reaches the host.
 
 Some alerts carry host data to Slack or Telegram: `wp-admins` lists administrator logins and emails, and `logfiles`, `journal` and `es-logs` forward the matching log lines.
 
