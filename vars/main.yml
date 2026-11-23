@@ -6,6 +6,7 @@ monitoring_registry:
   - {name: es-logs, src: check-es-logs.py.j2, every: 1, enabled: "{{ monitoring_es_logs_watch | length > 0 }}"}
   - {name: horizon-failed-jobs, src: check-horizon-failed-jobs.py.j2, every: 1, enabled: "{{ monitoring_horizon_failed_jobs_checks | length > 0 }}"}
   - {name: alb-targets, src: check-alb-targets.py.j2, every: 1, enabled: "{{ monitoring_alb_targets_watch | length > 0 }}"}
+  - {name: mysql-replication, src: check-mysql-replication.sh.j2, every: 1, enabled: "{{ monitoring_mysql_replication_watch | length > 0 }}"}
   - {name: ip-pool, src: check-ip-pool.sh.j2, every: 1, enabled: "{{ monitoring_ip_pool_watch | length > 0 }}"}
   - {name: logfiles, src: check-logfiles.sh.j2, every: 5, enabled: "{{ monitoring_logfile_checks | length > 0 }}"}
   - {name: disk-usage, src: check-disk-usage.sh.j2, every: 5, enabled: "{{ monitoring_disk_usage_enabled }}"}

@@ -1,0 +1,40 @@
+#!/bin/bash
+# {{ ansible_managed }}
+# Alerts when a MySQL replica's IO or SQL thread is not running, and when it
+# lags behind its source by more than max_lag_seconds.
+
+set -euo pipefail
+
+NOTIFY="{{ monitoring_scripts_path }}/monitoring-notify"
+MAX_LAG={{ monitoring_mysql_replication_watch.max_lag_seconds | default(7200) | int }}
+
+status=$(/usr/bin/mysql --defaults-extra-file=/root/.my.cnf -e 'SHOW REPLICA STATUS\G' 2>/dev/null) \
+    || status=$(/usr/bin/mysql --defaults-extra-file=/root/.my.cnf -e 'SHOW SLAVE STATUS\G')
+
+field() {
+    printf '%s\n' "$status" | /usr/bin/awk -F': ' -v re="^ *($1)$" '$1 ~ re {print $2; exit}'
+}
+
+if [ -z "$status" ]; then
+    "$NOTIFY" alert mysql-replication-threads "MySQL replication is not configured"
+    exit 0
+fi
+
+io=$(field 'Replica_IO_Running|Slave_IO_Running')
+sql=$(field 'Replica_SQL_Running|Slave_SQL_Running')
+lag=$(field 'Seconds_Behind_Source|Seconds_Behind_Master')
+
+if [ "$io" = "Yes" ] && [ "$sql" = "Yes" ]; then
+    "$NOTIFY" clear mysql-replication-threads "MySQL replication runs again"
+else
+    "$NOTIFY" alert mysql-replication-threads "MySQL replication stopped: IO ${io:-unknown}, SQL ${sql:-unknown}
+$(field 'Last_IO_Error') $(field 'Last_SQL_Error')"
+fi
+
+if [[ "$lag" =~ ^[0-9]+$ ]]; then
+    if [ "$lag" -gt "$MAX_LAG" ]; then
+        "$NOTIFY" alert mysql-replication-lag "MySQL replica is ${lag}s behind its source (max ${MAX_LAG}s)"
+    else
+        "$NOTIFY" clear mysql-replication-lag "MySQL replica caught up (${lag}s behind)"
+    fi
+fi

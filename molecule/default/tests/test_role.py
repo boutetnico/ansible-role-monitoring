@@ -19,6 +19,7 @@ SHELL_CHECKS = [
     "reboot-required",
     "files",
     "table-fragmentation",
+    "mysql-replication",
     "custom",
 ]
 
@@ -168,3 +169,27 @@ def test_reboot_required_check(host):
     host.run("rm -f /var/run/reboot-required")
     assert host.run(f"{BIN}/check-reboot-required").rc == 0
     assert not host.file(key).exists
+
+
+def test_mysql_replication_check(host):
+    threads = f"{ALERTS}/mysql-replication-threads"
+    lag = f"{ALERTS}/mysql-replication-lag"
+
+    def replica(io, behind):
+        host.run(
+            "printf '%s\\n' '#!/bin/sh' "
+            f"'printf \"Replica_IO_Running: {io}\\nReplica_SQL_Running: Yes\\n"
+            f"Seconds_Behind_Source: {behind}\\nLast_IO_Error: boom\\n\"' "
+            "> /usr/bin/mysql && chmod +x /usr/bin/mysql"
+        )
+        assert host.run(f"{BIN}/check-mysql-replication").rc == 0
+
+    replica("No", "NULL")
+    assert host.file(threads).exists
+    assert "boom" in host.file(threads).content_string
+    replica("Yes", 5000)
+    assert not host.file(threads).exists
+    assert host.file(lag).exists
+    replica("Yes", 10)
+    assert not host.file(lag).exists
+    host.run("rm -f /usr/bin/mysql")

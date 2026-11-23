@@ -62,3 +62,5 @@ monitoring_es_logs_watch: {}
 monitoring_slow_query_watch: {}
 
 monitoring_table_fragmentation_watch: {}
+
+monitoring_mysql_replication_watch: {}

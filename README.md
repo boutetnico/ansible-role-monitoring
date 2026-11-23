@@ -4,7 +4,7 @@
 ansible-role-monitoring
 =======================
 
-This role installs host checks that alert to Slack and/or Telegram: failed units, services, log errors, the journal, disk usage, pending security updates and reboots, host posture, backups (S3, B2), WordPress administrators, Laravel failed jobs, MySQL slow queries and fragmentation, Elasticsearch log rules, Sentry intake and a few AWS signals.
+This role installs host checks that alert to Slack and/or Telegram: failed units, services, log errors, the journal, disk usage, pending security updates and reboots, host posture, backups (S3, B2), WordPress administrators, Laravel failed jobs, MySQL replication, slow queries and fragmentation, Elasticsearch log rules, Sentry intake and a few AWS signals.
 
 Each check is a script in `/usr/local/bin`, enabled by its variable and run on its interval by a dispatcher that a systemd timer starts every minute. A condition alerts once, optionally reminds, and reports its recovery.
 
@@ -66,6 +66,7 @@ Role Variables
 | monitoring_sentry_events_watch        | no       | `{}`                              | dict    | `api_url`, `api_token`, `compose_project`.                     |
 | monitoring_es_logs_watch              | no       | `{}`                              | dict    | `url`, `username`, `password`, `rules`.                        |
 | monitoring_slow_query_watch           | no       | `{}`                              | dict    | `slow_log_path` and thresholds.                                |
+| monitoring_mysql_replication_watch    | no       | `{}`                              | dict    | Every minute; `max_lag_seconds` (default 7200).                |
 | monitoring_table_fragmentation_watch  | no       | `{}`                              | dict    | Daily; `min_free_mb`, `min_free_pct`.                          |
 
 A check whose variable is empty or false is not installed.

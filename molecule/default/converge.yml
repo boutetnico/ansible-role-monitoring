@@ -118,6 +118,8 @@
           timeframe_minutes: 30
     monitoring_slow_query_watch:
       slow_log_path: /var/log/mysql/mysql-slow.log
+    monitoring_mysql_replication_watch:
+      max_lag_seconds: 3600
     monitoring_table_fragmentation_watch:
       min_free_mb: 512
 
