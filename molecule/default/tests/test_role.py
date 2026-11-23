@@ -58,6 +58,8 @@ def test_python_script_compiles(host, name):
 def test_secrets_are_not_passed_as_arguments(host):
     services = host.file(f"{BIN}/check-services").content_string
     assert "probe-secret" not in services
+    assert "X-Probe-Token: token-secret" in services
+    assert "-H 'X-Probe-Token" not in services
     assert "-u " not in services
     assert "-H @-" in services
     sentry = host.file(f"{BIN}/check-sentry-events").content_string

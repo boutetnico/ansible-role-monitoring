@@ -70,13 +70,13 @@ Role Variables
 
 A check whose variable is empty or false is not installed.
 
-Each `monitoring_service_checks` entry takes `name`, optional `retries` (5 seconds apart) and one of `unit` (systemd unit), `port` (with optional `host`), `socket`, or `url` with optional `status` (default 200), `resolve` (IP to connect to instead of DNS), `host_header`, `https_forwarded`, `username`/`password`, `max_time` and `validate_certs`.
+Each `monitoring_service_checks` entry takes `name`, optional `retries` (5 seconds apart) and one of `unit` (systemd unit), `port` (with optional `host`), `socket`, or `url` with optional `status` (default 200), `resolve` (IP to connect to instead of DNS), `host_header`, `https_forwarded`, `username`/`password`, `headers` (dict, sent on stdin with the credentials so neither shows in the process list), `max_time` and `validate_certs`.
 
 Each `monitoring_logfile_checks` entry takes `name`, `path`, `pattern` (ERE) and optionally `exclude` (ERE), `context` (lines after each match), `ignore_case` (default true), `min_matches` (default 1), `entry_start` (ERE marking the first line of a multi-line entry) and `glob` (pick the newest file matching `path`). Only lines written since the previous run are read; rotation to `<path>.1` is followed.
 
 AWS checks take `credentials`: `default` (the boto3 credential chain) or `instance-profile` (EC2 instance metadata only). Each `monitoring_s3_backup_watch.checks` entry takes `bucket`, `prefix`, `max_age_hours` and optionally `min_size` (bytes) and `name`.
 
-Elasticsearch `rules` are `frequency` rules (`filter`, `threshold`, `realert_minutes`) or `flatline` rules (`threshold`, `baseline_hours`), each with `name`, `title`, `index`, `timeframe_minutes`, `query_key` and `text_template`.
+Elasticsearch `rules` are `frequency` rules (`filter`, `threshold`, `realert_minutes`) or `flatline` rules (`threshold`, `baseline_hours`), each with `name`, `title`, `index`, `timeframe_minutes`, `query_key`, `text_template` and optionally `timestamp_field` (default `@timestamp`).
 
 Dependencies
 ------------

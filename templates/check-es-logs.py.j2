@@ -98,12 +98,13 @@ def run_frequency(rule):
     now = datetime.now(timezone.utc)
     gte = (now - timedelta(minutes=rule["timeframe_minutes"])).isoformat()
     query_key = rule.get("query_key", "host.name")
+    timestamp = rule.get("timestamp_field", "@timestamp")
     body = {
         "size": 0,
         "query": {
             "bool": {
                 "filter": [
-                    {"range": {"@timestamp": {"gte": gte}}},
+                    {"range": {timestamp: {"gte": gte}}},
                     rule["filter"],
                 ]
             }
@@ -115,7 +116,7 @@ def run_frequency(rule):
                     "sample": {
                         "top_hits": {
                             "size": 1,
-                            "sort": [{"@timestamp": {"order": "desc"}}],
+                            "sort": [{timestamp: {"order": "desc"}}],
                         }
                     }
                 },
@@ -144,11 +145,12 @@ def run_flatline(rule):
     baseline_hours = rule.get("baseline_hours", 24)
     baseline_gte = (now - timedelta(hours=baseline_hours)).isoformat()
     query_key = rule.get("query_key", "host.name")
+    timestamp = rule.get("timestamp_field", "@timestamp")
 
     def host_counts(since):
         body = {
             "size": 0,
-            "query": {"bool": {"filter": [{"range": {"@timestamp": {"gte": since}}}]}},
+            "query": {"bool": {"filter": [{"range": {timestamp: {"gte": since}}}]}},
             "aggs": {"by_host": {"terms": {"field": query_key, "size": 500}}},
         }
         resp = es_post(search_path(rule), body)

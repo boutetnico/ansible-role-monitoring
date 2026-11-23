@@ -20,12 +20,12 @@ probe() {
 }
 
 http_status() {
-    local expected="$1" auth="$2"
+    local expected="$1" headers="$2"
     shift 2
-    if [ -n "$auth" ]; then
+    if [ -n "$headers" ]; then
         set -- -H @- "$@"
     fi
-    [ "$(printf '%s\n' "$auth" | /usr/bin/curl -s -o /dev/null -w '%{http_code}' "$@")" = "$expected" ]
+    [ "$(printf '%s\n' "$headers" | /usr/bin/curl -s -o /dev/null -w '%{http_code}' "$@")" = "$expected" ]
 }
 
 {% for svc in monitoring_service_checks %}
@@ -41,9 +41,11 @@ probe {{ svc.name | quote }} {{ retries }} /usr/bin/test -S {{ svc.socket | quot
 {% set args = ['--max-time', svc.max_time | default(5) | string] %}
 {% if svc.host_header is defined %}{% set _ = args.extend(['-H', 'Host: ' ~ svc.host_header]) %}{% endif %}
 {% if svc.https_forwarded | default(false) %}{% set _ = args.extend(['-H', 'X-Forwarded-Proto: https']) %}{% endif %}
-{% set auth = ('Authorization: Basic ' ~ (svc.username ~ ':' ~ svc.password) | b64encode) if svc.username is defined else '' %}
+{% set headers = [] %}
+{% if svc.username is defined %}{% set _ = headers.append('Authorization: Basic ' ~ (svc.username ~ ':' ~ svc.password) | b64encode) %}{% endif %}
+{% for name, value in (svc.headers | default({})).items() %}{% set _ = headers.append(name ~ ': ' ~ value) %}{% endfor %}
 {% if svc.resolve is defined %}{% set _ = args.extend(['--resolve', u.hostname ~ ':' ~ (u.port or (443 if u.scheme == 'https' else 80)) ~ ':' ~ svc.resolve]) %}{% endif %}
 {% if not (svc.validate_certs | default(true)) %}{% set _ = args.append('-k') %}{% endif %}
-probe {{ svc.name | quote }} {{ retries }} http_status {{ svc.status | default(200) | string | quote }} {{ auth | quote }} {% for a in args %}{{ a | quote }} {% endfor %}{{ svc.url | quote }}
+probe {{ svc.name | quote }} {{ retries }} http_status {{ svc.status | default(200) | string | quote }} {{ headers | join('\n') | quote }} {% for a in args %}{{ a | quote }} {% endfor %}{{ svc.url | quote }}
 {% endif %}
 {% endfor %}

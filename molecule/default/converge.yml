@@ -28,6 +28,8 @@
         host_header: app.example.com
         username: probe
         password: probe-secret
+        headers:
+          X-Probe-Token: token-secret
     monitoring_file_checks:
       - path: /etc/hostname
       - path: /var/lib/app/data.mmdb
@@ -104,6 +106,7 @@
           type: frequency
           index: "logs-*"
           timeframe_minutes: 5
+          timestamp_field: date
           text_template: "{host.name}: {message}"
           filter:
             match:
