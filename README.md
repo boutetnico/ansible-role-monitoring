@@ -4,7 +4,7 @@
 ansible-role-monitoring
 =======================
 
-This role installs host checks that alert to Slack and/or Telegram: failed units, services, log errors, the journal, disk usage, pending security updates and reboots, host posture, backups (S3, B2), WordPress administrators, Laravel failed jobs, MySQL replication, slow queries and fragmentation, Elasticsearch log rules, Sentry intake and a few AWS signals.
+This role installs host checks that alert to Slack and/or Telegram: failed units, services, log errors, the journal, disk usage, pending security updates and reboots, host posture, backups (S3, B2), WordPress administrators, Laravel failed jobs, MySQL replication, query results, slow queries and fragmentation, Elasticsearch log rules, Sentry intake and a few AWS signals.
 
 Each check is a script in `/usr/local/bin`, enabled by its variable and run on its interval by a dispatcher that a systemd timer starts every minute. A condition alerts once, optionally reminds, and reports its recovery.
 
@@ -62,6 +62,7 @@ Role Variables
 | monitoring_wp_admins_checks           | no       | `[]`                              | list    | `name`, `database`, `table_prefix`, `multisite`.               |
 | monitoring_failed_jobs_checks         | no       | `[]`                              | list    | `name`, `database`, `table`, `window_days`.                    |
 | monitoring_horizon_failed_jobs_checks | no       | `[]`                              | list    | `name`, `redis_host`, `redis_port`, `redis_db`, `prefix`.      |
+| monitoring_mysql_query_checks         | no       | `[]`                              | list    | Every 5 minutes; `name`, `query`, `min` and/or `max`.          |
 | monitoring_posture_watch              | no       | `{}`                              | dict    | Hourly; `listeners`, `container_restarts`, `php_ini`.          |
 | monitoring_ip_pool_watch              | no       | `{}`                              | dict    | `interface`, `ipv4`, `ipv6` (expected counts).                 |
 | monitoring_b2_backup_watch            | no       | `{}`                              | dict    | Hourly; `bucket`, `folders`, `max_age_hours`, `env`.           |
@@ -80,6 +81,8 @@ A check whose variable is empty or false is not installed.
 Each `monitoring_service_checks` entry takes `name`, optional `retries` (5 seconds apart) and one of `unit` (systemd unit), `port` (with optional `host`), `socket`, or `url` with optional `status` (default 200), `resolve` (IP to connect to instead of DNS), `host_header`, `https_forwarded`, `username`/`password`, `headers` (dict, sent on stdin with the credentials so neither shows in the process list), `max_time` and `validate_certs`.
 
 Each `monitoring_logfile_checks` entry takes `name`, `path`, `pattern` (ERE) and optionally `exclude` (ERE), `context` (lines after each match), `ignore_case` (default true), `min_matches` (default 1), `entry_start` (ERE marking the first line of a multi-line entry) and `glob` (pick the newest file matching `path`). Only lines written since the previous run are read; rotation to `<path>.1` is followed.
+
+A `monitoring_mysql_query_checks` query must return one number, e.g. `SELECT COUNT(*) FROM mysql.time_zone_name` with `min: 1`; it alerts below `min`, above `max`, or when the query fails.
 
 AWS checks take `credentials`: `default` (the boto3 credential chain) or `instance-profile` (EC2 instance metadata only). Each `monitoring_s3_backup_watch.checks` entry takes `bucket`, `prefix`, `max_age_hours` and optionally `min_size` (bytes) and `name`.
 

@@ -5,7 +5,7 @@
     quiet: true
     that:
       - (monitoring_custom_checks + monitoring_service_checks + monitoring_logfile_checks + monitoring_wp_admins_checks
-        + monitoring_failed_jobs_checks + monitoring_horizon_failed_jobs_checks) | map(attribute='name')
+        + monitoring_failed_jobs_checks + monitoring_horizon_failed_jobs_checks + monitoring_mysql_query_checks) | map(attribute='name')
         | reject('match', '^[A-Za-z0-9_-]+$') | list | length == 0
       - (monitoring_wp_admins_checks + monitoring_failed_jobs_checks) | map(attribute='database')
         | reject('match', '^[A-Za-z0-9_$]+$') | list | length == 0

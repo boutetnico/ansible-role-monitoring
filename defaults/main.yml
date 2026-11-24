@@ -47,6 +47,8 @@ monitoring_failed_jobs_checks: []
 
 monitoring_horizon_failed_jobs_checks: []
 
+monitoring_mysql_query_checks: []
+
 monitoring_posture_watch: {}
 
 monitoring_ip_pool_watch: {}

@@ -1,0 +1,34 @@
+#!/bin/bash
+# {{ ansible_managed }}
+# Alerts when a query's single numeric result falls outside its min/max, or
+# when the query fails.
+
+set -uo pipefail
+
+NOTIFY="{{ monitoring_scripts_path }}/monitoring-notify"
+
+active=()
+check() {
+    local name=$1 query=$2 min=$3 max=$4 key="mysql-queries-$1" value
+    if ! value=$(/usr/bin/mysql --defaults-extra-file=/root/.my.cnf -N -B -e "$query" 2>&1); then
+        active+=("$key")
+        "$NOTIFY" alert "$key" "MySQL query ${name} failed: ${value}"
+        return
+    fi
+    value=$(printf '%s\n' "$value" | /usr/bin/head -n 1)
+    if ! [[ "$value" =~ ^-?[0-9]+(\.[0-9]+)?$ ]]; then
+        active+=("$key")
+        "$NOTIFY" alert "$key" "MySQL query ${name} returned ${value:-nothing}, not a number"
+    elif [ -n "$min" ] && /usr/bin/awk -v v="$value" -v m="$min" 'BEGIN { exit !(v < m) }'; then
+        active+=("$key")
+        "$NOTIFY" alert "$key" "MySQL query ${name} returned ${value}, below ${min}"
+    elif [ -n "$max" ] && /usr/bin/awk -v v="$value" -v m="$max" 'BEGIN { exit !(v > m) }'; then
+        active+=("$key")
+        "$NOTIFY" alert "$key" "MySQL query ${name} returned ${value}, above ${max}"
+    fi
+}
+
+{% for check in monitoring_mysql_query_checks %}
+check {{ check.name | quote }} {{ check.query | quote }} {{ check.min | default('') | string | quote }} {{ check.max | default('') | string | quote }}
+{% endfor %}
+"$NOTIFY" resolve mysql-queries- "${active[@]}"

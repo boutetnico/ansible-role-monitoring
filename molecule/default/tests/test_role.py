@@ -20,6 +20,7 @@ SHELL_CHECKS = [
     "files",
     "table-fragmentation",
     "mysql-replication",
+    "mysql-queries",
     "custom",
 ]
 
@@ -230,3 +231,25 @@ def test_notifier_signs_a_valid_vonage_token(host):
         "EOF"
     )
     assert check.rc == 0, check.stdout + check.stderr
+
+
+def test_mysql_query_check(host):
+    key = f"{ALERTS}/mysql-queries-time-zones"
+
+    def returns(output, rc=0):
+        host.run(
+            f"printf '%s\\n' '#!/bin/sh' 'echo \"{output}\"' 'exit {rc}' "
+            "> /usr/bin/mysql && chmod +x /usr/bin/mysql"
+        )
+        assert host.run(f"{BIN}/check-mysql-queries").rc == 0
+
+    returns(0)
+    assert "below 1" in host.file(key).content_string
+    returns(500)
+    assert not host.file(key).exists
+    assert "above 100" in host.file(f"{ALERTS}/mysql-queries-queue").content_string
+    returns("Access denied", 1)
+    assert "failed: Access denied" in host.file(key).content_string
+    returns(5)
+    assert not host.file(key).exists
+    host.run("rm -f /usr/bin/mysql")

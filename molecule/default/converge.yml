@@ -125,6 +125,13 @@
       slow_log_path: /var/log/mysql/mysql-slow.log
     monitoring_mysql_replication_watch:
       max_lag_seconds: 3600
+    monitoring_mysql_query_checks:
+      - name: time-zones
+        query: SELECT COUNT(*) FROM mysql.time_zone_name
+        min: 1
+      - name: queue
+        query: SELECT 1
+        max: 100
     monitoring_table_fragmentation_watch:
       min_free_mb: 512
 
