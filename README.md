@@ -4,20 +4,25 @@
 ansible-role-monitoring
 =======================
 
-This role installs host checks that alert to Slack and/or Telegram: failed units, services, log errors, the journal, disk usage, pending security updates and reboots, host posture, backups (S3, B2), WordPress administrators, Laravel failed jobs, MySQL replication, query results, slow queries and fragmentation, Elasticsearch log rules, Sentry intake and a few AWS signals.
+Host checks that alert to Slack, Telegram and SMS, with no agent or server to run.
 
-Each check is a script in `/usr/local/bin`, enabled by its variable and run on its interval by a dispatcher that a systemd timer starts every minute. A condition alerts once, optionally reminds, and reports its recovery. Slack shows each message as a red, green or grey attachment, for an alert, a recovery or anything else, with the first line as its title. `monitoring-notify send MESSAGE "Label: value"...` adds each argument as a field, which `slow-queries` uses for its figures.
+- Each check is a script in `/usr/local/bin`, installed only when its variable is set.
+- A systemd timer starts a dispatcher every minute, which runs each check on its own interval.
+- A problem alerts once (optionally with reminders) and reports its recovery.
+- Slack shows alerts in red, recoveries in green and everything else in grey.
 
 Requirements
 ------------
 
 Ansible 2.10 or newer, systemd and Python 3 on the host. Some checks need more:
 
-- AWS checks: `boto3`.
-- MySQL checks: root access through `/root/.my.cnf`.
-- B2 backups: the `b2` CLI.
-- Sentry intake: Docker, for the container report.
-- SMS: `openssl`, to sign the Vonage token.
+| For           | You need                         |
+|---------------|----------------------------------|
+| AWS checks    | `boto3`                          |
+| MySQL checks  | root access via `/root/.my.cnf`  |
+| B2 backups    | the `b2` CLI                     |
+| Sentry intake | Docker, for the container report |
+| SMS           | `openssl`, to sign Vonage tokens |
 
 Supported Platforms
 -------------------
@@ -27,86 +32,18 @@ Supported Platforms
 - [Ubuntu - 22.04 (Jammy Jellyfish)](http://releases.ubuntu.com/22.04/)
 - [Ubuntu - 24.04 (Noble Numbat)](http://releases.ubuntu.com/24.04/)
 
-Role Variables
---------------
-
-| Variable                              | Required | Default                           | Choices | Comments                                                       |
-|---------------------------------------|----------|-----------------------------------|---------|----------------------------------------------------------------|
-| monitoring_label                      | no       | `""`                              | string  | Prefix of every message, before the hostname.                  |
-| monitoring_scripts_path               | yes      | `/usr/local/bin`                  | string  |                                                                |
-| monitoring_state_dir                  | yes      | `/var/lib/monitoring`             | string  |                                                                |
-| monitoring_slack_webhook_url          | no       | `""`                              | string  | Slack incoming webhook.                                        |
-| monitoring_telegram_bot_token         | no       | `""`                              | string  | Telegram needs both the token and the chat id.                 |
-| monitoring_telegram_chat_id           | no       | `""`                              | string  |                                                                |
-| monitoring_vonage_application_id      | no       | `""`                              | string  | Vonage application with the Messages capability.               |
-| monitoring_vonage_private_key         | no       | `""`                              | string  | That application's private key (PEM), signs short-lived JWTs.  |
-| monitoring_sms_from                   | no       | `Monitoring`                      | string  | Sender name.                                                   |
-| monitoring_sms_to                     | no       | `[]`                              | list    | International format without `+`, e.g. `33612345678`.         |
-| monitoring_sms_keys                   | no       | `[]`                              | list    | Alert key regexes that also send an SMS, e.g. `^services-`.    |
-| monitoring_reminder_minutes           | yes      | `0`                               | int     | Repeat an ongoing alert this often; 0 alerts once.             |
-| monitoring_maintenance_flag           | yes      | `/var/lib/monitoring/maintenance` | string  | While this file exists, nothing is sent.                       |
-| monitoring_maintenance_max_minutes    | yes      | `0`                               | int     | A flag older than this is ignored; 0 never expires.            |
-| monitoring_intervals                  | no       | `{}`                              | dict    | Check name to interval in minutes, overriding the default.     |
-| monitoring_custom_checks              | no       | `[]`                              | list    | `name`, `src` (template), `every` (minutes).                   |
-| monitoring_systemd_failures_enabled   | yes      | `true`                            | bool    | Every minute.                                                  |
-| monitoring_systemd_failures_ignore    | no       | `[]`                              | list    | Unit name regexes.                                             |
-| monitoring_service_checks             | no       | `[]`                              | list    | Every minute, see below.                                       |
-| monitoring_file_checks                | no       | `[]`                              | list    | Daily; `path`, optional `max_age_days`.                        |
-| monitoring_disk_usage_enabled         | yes      | `true`                            | bool    | Every 5 minutes.                                               |
-| monitoring_disk_usage_threshold       | yes      | `85`                              | int     | Percent.                                                       |
-| monitoring_disk_usage_excludes        | no       | `[]`                              | list    | Mount point prefixes.                                          |
-| monitoring_apt_security_enabled       | yes      | `true`                            | bool    | Daily; inert unless `unattended_package_blacklist` is defined. |
-| monitoring_reboot_required_enabled    | yes      | `true`                            | bool    | Daily.                                                         |
-| monitoring_logfile_checks             | no       | `[]`                              | list    | Every 5 minutes, see below.                                    |
-| monitoring_journal_watch              | no       | `{}`                              | dict    | Every minute; `ignore` (list of regexes).                      |
-| monitoring_wp_admins_checks           | no       | `[]`                              | list    | `name`, `database`, `table_prefix`, `multisite`.               |
-| monitoring_failed_jobs_checks         | no       | `[]`                              | list    | `name`, `database`, `table`, `window_days`.                    |
-| monitoring_horizon_failed_jobs_checks | no       | `[]`                              | list    | `name`, `redis_host`, `redis_port`, `redis_db`, `prefix`.      |
-| monitoring_mysql_query_checks         | no       | `[]`                              | list    | Every 5 minutes; `name`, `query`, `min` and/or `max`.          |
-| monitoring_posture_watch              | no       | `{}`                              | dict    | Hourly; `listeners`, `container_restarts`, `php_ini`.          |
-| monitoring_ip_pool_watch              | no       | `{}`                              | dict    | `interface`, `ipv4`, `ipv6` (expected counts).                 |
-| monitoring_b2_backup_watch            | no       | `{}`                              | dict    | Hourly; `bucket`, `folders`, `max_age_hours`, `env`.           |
-| monitoring_s3_backup_watch            | no       | `{}`                              | dict    | `region`, `credentials`, `checks`, see below.                  |
-| monitoring_cpu_credits_watch          | no       | `{}`                              | dict    | `region`, `credentials`, `tag_key`, `tag_value`.               |
-| monitoring_alb_targets_watch          | no       | `{}`                              | dict    | `region`, `credentials`, `tag_key`, `tag_value`.               |
-| monitoring_ses_quota_watch            | no       | `{}`                              | dict    | `region`, `credentials`, `threshold_percent`.                  |
-| monitoring_sentry_events_watch        | no       | `{}`                              | dict    | `api_url`, `api_token`, `compose_project`.                     |
-| monitoring_es_logs_watch              | no       | `{}`                              | dict    | `url`, `username`, `password`, `timeout`, `rules`.             |
-| monitoring_slow_query_watch           | no       | `{}`                              | dict    | `slow_log_path` and thresholds.                                |
-| monitoring_mysql_replication_watch    | no       | `{}`                              | dict    | Every minute; `max_lag_seconds` (default 7200).                |
-| monitoring_table_fragmentation_watch  | no       | `{}`                              | dict    | Daily; `min_free_mb`, `min_free_pct`.                          |
-
-A check whose variable is empty or false is not installed.
-
-Each `monitoring_service_checks` entry takes `name`, optional `retries` (5 seconds apart) and one of `unit` (systemd unit), `port` (with optional `host`), `socket`, or `url` with optional `status` (default 200), `resolve` (IP to connect to instead of DNS), `host_header`, `https_forwarded`, `username`/`password`, `headers` (dict, sent on stdin with the credentials so neither shows in the process list), `max_time` and `validate_certs`.
-
-Each `monitoring_logfile_checks` entry takes `name`, `path`, `pattern` (ERE) and optionally `exclude` (ERE), `context` (lines after each match), `ignore_case` (default true), `min_matches` (default 1), `entry_start` (ERE marking the first line of a multi-line entry) and `glob` (pick the newest file matching `path`). Only lines written since the previous run are read; rotation to `<path>.1` is followed.
-
-A `monitoring_mysql_query_checks` query must return one number, e.g. `SELECT COUNT(*) FROM mysql.time_zone_name` with `min: 1`; it alerts below `min`, above `max`, or when the query fails.
-
-AWS checks take `credentials`: `default` (the boto3 credential chain) or `instance-profile` (EC2 instance metadata only). Each `monitoring_s3_backup_watch.checks` entry takes `bucket`, `prefix`, `max_age_hours` and optionally `min_size` (bytes) and `name`.
-
-Elasticsearch `rules` are `frequency` rules (`filter`, `threshold`, `realert_minutes`) or `flatline` rules (`threshold`, `baseline_hours`), each with `name`, `title`, `index`, `timeframe_minutes`, `query_key`, `text_template` and optionally `timestamp_field` (default `@timestamp`). `timeout` is how long a query may take, in seconds (default 10).
-
-Dependencies
-------------
-
-None
-
 Example Playbook
 ----------------
+
+With only a webhook, you get failed units, disk usage, security updates and pending reboots. Add checks as you need them:
 
     - hosts: all
       roles:
         - role: ansible-role-monitoring
-          monitoring_label: myapp
-          monitoring_telegram_bot_token: "{{ vault_telegram_bot_token }}"
-          monitoring_telegram_chat_id: "123456789"
-          monitoring_reminder_minutes: 30
+          monitoring_slack_webhook_url: "{{ vault_slack_webhook_url }}"
           monitoring_service_checks:
             - name: nginx
               unit: nginx
-              retries: 6
             - name: app
               url: https://example.com/up
               resolve: 127.0.0.1
@@ -114,20 +51,251 @@ Example Playbook
             - name: nginx
               path: /var/log/nginx/error.log
               pattern: "\\[(error|crit|alert|emerg)\\]"
-              entry_start: "^[0-9]+/[0-9]+/[0-9]+ "
-          monitoring_posture_watch:
-            listeners:
-              - 0.0.0.0:22
-              - 0.0.0.0:443
+
+Then check delivery with `monitoring-notify test`.
+
+Checks
+------
+
+| Check                 | Enabled by                              | Every  | Alerts when                                                  |
+|-----------------------|-----------------------------------------|--------|--------------------------------------------------------------|
+| `systemd-failures`    | `monitoring_systemd_failures_enabled` ✓ | 1 min  | a systemd unit has failed                                    |
+| `disk-usage`          | `monitoring_disk_usage_enabled` ✓       | 5 min  | a filesystem is fuller than the threshold                    |
+| `apt-security`        | `monitoring_apt_security_enabled` ✓     | daily  | security updates are pending                                 |
+| `reboot-required`     | `monitoring_reboot_required_enabled` ✓  | daily  | the host needs a reboot                                      |
+| `services`            | `monitoring_service_checks`             | 1 min  | a unit, port, socket or URL is down                          |
+| `journal`             | `monitoring_journal_watch`              | 1 min  | the journal gets entries of priority err or worse            |
+| `logfiles`            | `monitoring_logfile_checks`             | 5 min  | new lines in a log file match a pattern                      |
+| `es-logs`             | `monitoring_es_logs_watch`              | 1 min  | an Elasticsearch log rule matches, or a source goes quiet    |
+| `files`               | `monitoring_file_checks`                | daily  | a file is missing or too old                                 |
+| `posture`             | `monitoring_posture_watch`              | hourly | unexpected listeners, restart loops, drifted PHP settings    |
+| `ip-pool`             | `monitoring_ip_pool_watch`              | 1 min  | an interface holds fewer addresses than expected             |
+| `mysql-replication`   | `monitoring_mysql_replication_watch`    | 1 min  | replica threads stop, or lag passes the limit                |
+| `mysql-queries`       | `monitoring_mysql_query_checks`         | 5 min  | a query's number leaves its min/max, or the query fails      |
+| `slow-queries`        | `monitoring_slow_query_watch`           | 5 min  | a new query fingerprint is slow or scans many rows           |
+| `table-fragmentation` | `monitoring_table_fragmentation_watch`  | daily  | an InnoDB table holds enough free space to optimize          |
+| `wp-admins`           | `monitoring_wp_admins_checks`           | 5 min  | a WordPress site gains administrators                        |
+| `failed-jobs`         | `monitoring_failed_jobs_checks`         | 5 min  | a Laravel `failed_jobs` table gains rows                     |
+| `horizon-failed-jobs` | `monitoring_horizon_failed_jobs_checks` | 1 min  | Horizon's failed job count grows                             |
+| `sentry-events`       | `monitoring_sentry_events_watch`        | 5 min  | a self-hosted Sentry accepted no event                       |
+| `b2-backups`          | `monitoring_b2_backup_watch`            | hourly | the newest backup in a B2 folder is missing or too old       |
+| `s3-backups`          | `monitoring_s3_backup_watch`            | 5 min  | the newest backup under an S3 prefix is too old or too small |
+| `alb-targets`         | `monitoring_alb_targets_watch`          | 1 min  | a load balancer target stays unhealthy                       |
+| `cpu-credits`         | `monitoring_cpu_credits_watch`          | 5 min  | a burstable EC2 instance drains its CPU credits              |
+| `ses-quota`           | `monitoring_ses_quota_watch`            | 5 min  | SES sends pass a share of the 24-hour quota                  |
+
+✓ on by default. Change an interval with `monitoring_intervals`, e.g. `{disk-usage: 15}`.
+
+Role Variables
+--------------
+
+### Notifications
+
+| Variable                             | Default                           | Comments                                                    |
+|--------------------------------------|-----------------------------------|-------------------------------------------------------------|
+| `monitoring_slack_webhook_url`       | `""`                              | Slack incoming webhook.                                     |
+| `monitoring_telegram_bot_token`      | `""`                              | Telegram needs both the token and the chat id.              |
+| `monitoring_telegram_chat_id`        | `""`                              |                                                             |
+| `monitoring_label`                   | `""`                              | Prefix of every message, e.g. the environment.              |
+| `monitoring_reminder_minutes`        | `0`                               | Repeat an ongoing alert this often; 0 alerts once.          |
+| `monitoring_vonage_application_id`   | `""`                              | Vonage application with the Messages capability.            |
+| `monitoring_vonage_private_key`      | `""`                              | Its private key (PEM), used to sign short-lived JWTs.       |
+| `monitoring_sms_from`                | `Monitoring`                      | SMS sender name.                                            |
+| `monitoring_sms_to`                  | `[]`                              | Numbers in international format without `+`.                |
+| `monitoring_sms_keys`                | `[]`                              | Alert key regexes that also send an SMS, e.g. `^services-`. |
+| `monitoring_maintenance_flag`        | `/var/lib/monitoring/maintenance` | While this file exists, nothing is sent.                    |
+| `monitoring_maintenance_max_minutes` | `0`                               | Ignore a flag older than this; 0 never expires.             |
+
+### General
+
+| Variable                   | Default               | Comments                                              |
+|----------------------------|-----------------------|-------------------------------------------------------|
+| `monitoring_scripts_path`  | `/usr/local/bin`      |                                                       |
+| `monitoring_state_dir`     | `/var/lib/monitoring` | Alert state, one file per active alert.               |
+| `monitoring_intervals`     | `{}`                  | Check name to interval in minutes.                    |
+| `monitoring_custom_checks` | `[]`                  | Your own checks, see [Custom checks](#custom-checks). |
+
+### Check settings
+
+Where a key has a default, the example shows it. Names, paths, buckets and credentials are examples.
+
+**System**
+
+    monitoring_systemd_failures_ignore: []     # unit name regexes
+    monitoring_disk_usage_threshold: 85        # percent
+    monitoring_disk_usage_excludes: []         # mount point prefixes
+    monitoring_journal_watch:
+      ignore: []                               # regexes
+    monitoring_file_checks:
+      - path: /var/backups/db.sql.gz
+        max_age_days: 1                        # optional
+    monitoring_posture_watch:
+      listeners: [0.0.0.0:22, 0.0.0.0:443]     # expected TCP listeners
+      container_restarts: 3                    # restarts per run that alert
+      php_ini: {expose_php: ""}                # expected php-fpm values
+    monitoring_ip_pool_watch:
+      interface: eth0
+      ipv4: 1                                  # expected address counts
+      ipv6: 1
+
+`apt-security` stays silent unless `unattended_package_blacklist` is defined.
+
+**Services**: each entry has a `name`, optional `retries` (5 seconds apart) and one target:
+
+    monitoring_service_checks:
+      - {name: nginx, unit: nginx}
+      - {name: redis, port: 6379}       # host defaults to 127.0.0.1
+      - {name: php, socket: /run/php/php-fpm.sock}
+      - name: app
+        url: https://example.com/up
+        status: 200                  # expected status
+        resolve: 127.0.0.1           # connect here instead of DNS
+        host_header: example.com
+        https_forwarded: false       # send X-Forwarded-Proto: https
+        username: ""                 # basic auth
+        password: ""
+        headers: {}                  # sent on stdin, never in the process list
+        max_time: 5                  # seconds
+        validate_certs: true
+
+**Log files**: only lines written since the previous run are read, following rotation to `<path>.1`.
+
+    monitoring_logfile_checks:
+      - name: nginx
+        path: /var/log/nginx/error.log
+        pattern: "\\[(error|crit)\\]"   # ERE
+        exclude: ""                     # ERE
+        context: 0                      # lines kept after each match
+        ignore_case: true
+        min_matches: 1
+        entry_start: ""                 # ERE for the first line of a multi-line entry
+        glob: false                     # read the newest file matching path
+
+**Elasticsearch log rules**: a `frequency` rule alerts on matching documents, a `flatline` rule when a source goes quiet.
+
+    monitoring_es_logs_watch:
+      url: http://127.0.0.1:9200
+      username: ""
+      password: ""
+      timeout: 10                       # seconds per query
+      rules:
+        - name: nginx_errors
+          title: Nginx errors
+          type: frequency               # or flatline
+          index: "nginx-*"
+          timeframe_minutes: 5
+          query_key: host.name          # one alert per value
+          text_template: "Host: {host.name}\n\n{message}"
+          timestamp_field: "@timestamp"
+          filter: {query_string: {query: "level:error"}}   # frequency
+          threshold: 1
+          realert_minutes: 15                              # frequency
+          # baseline_hours: 24                             # flatline
+
+**MySQL**: the checks connect as root through `/root/.my.cnf`.
+
+    monitoring_mysql_replication_watch:
+      max_lag_seconds: 7200
+    monitoring_mysql_query_checks:
+      - name: time-zones
+        query: SELECT COUNT(*) FROM mysql.time_zone_name   # one number
+        min: 1                                             # and/or max
+    monitoring_slow_query_watch:
+      slow_log_path: /var/log/mysql/mysql-slow.log
+      min_query_time: 1.0               # seconds
+      min_rows_examined: 100000
+      min_examined_sent_ratio: 1000     # above this, "possible missing index"
+      min_calls: 5
+      max_alerts_per_run: 5
+      known_retention_days: 30
+    monitoring_table_fragmentation_watch:
+      min_free_mb: 1024
+      min_free_pct: 25
+
+The first `slow-queries` run records existing queries without alerting.
+
+**Applications**
+
+    monitoring_wp_admins_checks:
+      - {name: blog, database: wordpress, table_prefix: wp_, multisite: false}
+    monitoring_failed_jobs_checks:
+      - {name: app, database: app, table: failed_jobs, window_days: 7}
+    monitoring_horizon_failed_jobs_checks:
+      - {name: app, redis_host: 127.0.0.1, redis_port: 6379, redis_db: 0, prefix: "horizon:"}
+    monitoring_sentry_events_watch:
+      api_url: http://127.0.0.1:9000/api/0/organizations/ORG/stats_v2/?...
+      api_token: ""
+      compose_project: sentry-self-hosted
+
+**Backups**
+
+    monitoring_b2_backup_watch:
+      bucket: my-backups
+      folders: [db]                     # newest file named YYYYMMDDTHHMMSS
+      max_age_hours: 26
+      env: {B2_APPLICATION_KEY_ID: "", B2_APPLICATION_KEY: ""}
+    monitoring_s3_backup_watch:
+      region: eu-west-1
+      credentials: default
+      checks:
+        - {bucket: my-backups, prefix: db/, max_age_hours: 26, min_size: 1024, name: db}
+
+**AWS**: `credentials` is `default` (the boto3 credential chain) or `instance-profile` (EC2 metadata only). A tag limits the check to matching resources.
+
+    monitoring_alb_targets_watch:
+      {region: eu-west-1, credentials: default, tag_key: "", tag_value: "", consecutive: 2}
+    monitoring_cpu_credits_watch:
+      {region: eu-west-1, credentials: default, tag_key: "", tag_value: "",
+       drop_percent: 25, window_hours: 6, floor: 20}
+    monitoring_ses_quota_watch:
+      {region: eu-west-1, credentials: default, threshold_percent: 80}
 
 Usage
 -----
 
-`monitoring-notify test` sends a test message. `monitoring-notify alert|clear KEY MESSAGE`, `resolve PREFIX [KEY...]` and `send MESSAGE` are what the checks call, and what custom checks should call too. An alert whose key matches `monitoring_sms_keys` also sends an SMS when raised and when cleared; `monitoring-notify sms TEXT NUMBER...` sends one directly. SMS go through the Vonage Messages API, authenticated with a JWT signed by the application's private key, so the account API secret never reaches the host.
+### Sending messages
+
+Checks, custom ones included, report through `monitoring-notify`:
+
+    monitoring-notify alert KEY MESSAGE         # raise; sent once per KEY
+    monitoring-notify clear KEY MESSAGE         # recovery, if KEY was raised
+    monitoring-notify resolve PREFIX [KEY...]   # clear every PREFIX* key not listed
+    monitoring-notify send MESSAGE ["Label: value"...]   # one-off, with optional fields
+    monitoring-notify sms TEXT NUMBER...        # SMS to the given numbers
+    monitoring-notify test                      # one message per status
+
+The first line of a message is its title. Active alerts are files in `/var/lib/monitoring/alerts`, so `ls` shows what is failing.
+
+### SMS
+
+An alert whose key matches `monitoring_sms_keys` also sends an SMS when raised and when cleared, never as a reminder. SMS go through the Vonage Messages API with a JWT signed by the application's private key, so the account secret never reaches the host.
+
+### Custom checks
+
+Ship your own script as a template; the dispatcher runs it like the built-in ones.
+
+    monitoring_custom_checks:
+      - name: queue-size              # installed as check-queue-size
+        src: check-queue-size.sh.j2
+        every: 5                      # minutes
+
+A check exits 0 when it ran, whatever it found, and reports through `monitoring-notify`. A non-zero exit means it could not run: the dispatcher alerts with its last line of stderr, so make that line say why.
+
+### Maintenance
+
+    touch /var/lib/monitoring/maintenance   # mute everything
+    rm /var/lib/monitoring/maintenance      # unmute
+
+Checks keep running while muted, but nothing is sent or recorded.
+
+### Privacy
 
 Some alerts carry host data to Slack or Telegram: `wp-admins` lists administrator logins and emails, and `logfiles`, `journal` and `es-logs` forward the matching log lines.
 
-Before planned work, `touch /var/lib/monitoring/maintenance`, and remove it when done.
+Dependencies
+------------
+
+None
 
 Testing
 -------
