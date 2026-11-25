@@ -8,7 +8,7 @@
 #   monitoring-notify resolve PREFIX [KEY...]  clear every PREFIX* key not listed
 #   monitoring-notify send MESSAGE        one-off message
 #   monitoring-notify sms TEXT NUMBER...  SMS to the given numbers
-#   monitoring-notify test                test message
+#   monitoring-notify test                one test message per status
 #
 # Alerts whose key matches an SMS pattern also send an SMS through the Vonage
 # Messages API when raised and when cleared, never as a reminder. SMS failures
@@ -45,6 +45,7 @@ MAINTENANCE_FLAG = Path({{ monitoring_maintenance_flag | to_json }})
 MAINTENANCE_MAX_SECONDS = {{ monitoring_maintenance_max_minutes | int }} * 60
 ALERTS_DIR = Path({{ (monitoring_state_dir ~ '/alerts') | to_json }})
 MAX_LENGTH = 3800
+COLORS = {"alert": "#d9372b", "reminder": "#d9372b", "recovered": "#2eb67d"}
 
 
 def muted():
@@ -135,16 +136,38 @@ def page(key, text):
         sms(headline(text), SMS_TO)
 
 
-def deliver(text):
-    text = headline(text)
-    if len(text) > MAX_LENGTH:
-        text = text[:MAX_LENGTH] + "\n…truncated"
+def escape(text):
+    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def slack_payload(text, kind):
+    title, _, body = text.partition("\n")
+    status = "still failing" if kind == "reminder" else kind
+    return {
+        "attachments": [
+            {
+                "color": COLORS.get(kind, "#9e9e9e"),
+                "fallback": headline(title),
+                "footer": " · ".join(
+                    filter(None, [LABEL, socket.gethostname(), status])
+                ),
+                "mrkdwn_in": ["text"],
+                "text": f"*{escape(title)}*" + (f"\n{escape(body)}" if body else ""),
+            }
+        ]
+    }
+
+
+def deliver(message, kind="info"):
+    if len(message) > MAX_LENGTH:
+        message = message[:MAX_LENGTH] + "\n…truncated"
+    text = headline(message + (" (still failing)" if kind == "reminder" else ""))
     ok = True
     if SLACK_WEBHOOK_URL:
         ok = (
             post(
                 SLACK_WEBHOOK_URL,
-                json.dumps({"text": text}).encode(),
+                json.dumps(slack_payload(message, kind)).encode(),
                 {"Content-Type": "application/json"},
             )
             and ok
@@ -180,7 +203,7 @@ def alert(key, message):
         REMINDER_SECONDS == 0 or time.time() - path.stat().st_mtime < REMINDER_SECONDS
     ):
         return 0
-    if not deliver(f"{message} (still failing)" if reminder else message):
+    if not deliver(message, "reminder" if reminder else "alert"):
         return 1
     if not reminder:
         page(key, message)
@@ -193,7 +216,7 @@ def clear(key, message):
     if not path.exists():
         return 0
     if message and not muted():
-        if not deliver(message):
+        if not deliver(message, "recovered"):
             return 1
         page(key, message)
     path.unlink()
@@ -222,7 +245,11 @@ def main(argv):
     if len(argv) >= 4 and argv[1] == "sms":
         return 0 if muted() or sms(headline(argv[2]), argv[3:]) else 1
     if len(argv) == 2 and argv[1] == "test":
-        return 0 if deliver("monitoring test notification") else 1
+        results = [
+            deliver(f"monitoring test: {kind}\nsecond line", kind)
+            for kind in ("alert", "reminder", "recovered", "info")
+        ]
+        return 0 if all(results) else 1
     print(
         "usage: monitoring-notify alert|clear KEY MESSAGE | resolve PREFIX [KEY...]"
         " | send MESSAGE | sms TEXT NUMBER... | test",

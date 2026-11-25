@@ -1,3 +1,4 @@
+import json
 import pytest
 
 BIN = "/usr/local/bin"
@@ -231,6 +232,21 @@ def test_notifier_signs_a_valid_vonage_token(host):
         "EOF"
     )
     assert check.rc == 0, check.stdout + check.stderr
+
+
+def test_notifier_formats_slack_attachments(host):
+    result = host.run(
+        "python3 -c 'import json, runpy; "
+        f'n = runpy.run_path("{BIN}/monitoring-notify", run_name="n"); '
+        'print(json.dumps([n["slack_payload"]("db <down>\\nrows: 3", "alert"), '
+        'n["slack_payload"]("db up", "recovered")]))\''
+    )
+    assert result.rc == 0, result.stderr
+    alert, recovered = (p["attachments"][0] for p in json.loads(result.stdout))
+    assert alert["text"] == "*db &lt;down&gt;*\nrows: 3"
+    assert alert["color"] != recovered["color"]
+    assert alert["footer"].endswith(" · alert")
+    assert recovered["text"] == "*db up*"
 
 
 def test_mysql_query_check(host):
