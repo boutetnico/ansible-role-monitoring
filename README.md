@@ -6,7 +6,7 @@ ansible-role-monitoring
 
 This role installs host checks that alert to Slack and/or Telegram: failed units, services, log errors, the journal, disk usage, pending security updates and reboots, host posture, backups (S3, B2), WordPress administrators, Laravel failed jobs, MySQL replication, query results, slow queries and fragmentation, Elasticsearch log rules, Sentry intake and a few AWS signals.
 
-Each check is a script in `/usr/local/bin`, enabled by its variable and run on its interval by a dispatcher that a systemd timer starts every minute. A condition alerts once, optionally reminds, and reports its recovery. Slack shows each message as a red, green or grey attachment, for an alert, a recovery or anything else, with the first line as its title.
+Each check is a script in `/usr/local/bin`, enabled by its variable and run on its interval by a dispatcher that a systemd timer starts every minute. A condition alerts once, optionally reminds, and reports its recovery. Slack shows each message as a red, green or grey attachment, for an alert, a recovery or anything else, with the first line as its title. `monitoring-notify send MESSAGE "Label: value"...` adds each argument as a field, which `slow-queries` uses for its figures.
 
 Requirements
 ------------

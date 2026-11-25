@@ -250,7 +250,7 @@ def test_notifier_formats_slack_attachments(host):
         "python3 -c 'import json, runpy; "
         f'n = runpy.run_path("{BIN}/monitoring-notify", run_name="n"); '
         'print(json.dumps([n["slack_payload"]("db <down>\\nrows: 3", "alert"), '
-        'n["slack_payload"]("db up", "recovered")]))\''
+        'n["slack_payload"]("db up", "recovered", ["Max time: 1:02 <s>"])]))\''
     )
     assert result.rc == 0, result.stderr
     alert, recovered = (p["attachments"][0] for p in json.loads(result.stdout))
@@ -258,6 +258,10 @@ def test_notifier_formats_slack_attachments(host):
     assert alert["color"] != recovered["color"]
     assert alert["footer"].endswith(" · alert")
     assert recovered["text"] == "*db up*"
+    assert alert["fields"] == []
+    assert recovered["fields"] == [
+        {"short": True, "title": "Max time", "value": "1:02 &lt;s&gt;"}
+    ]
 
 
 def test_mysql_query_check(host):

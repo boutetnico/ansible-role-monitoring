@@ -6,7 +6,8 @@
 #   monitoring-notify clear KEY MESSAGE   recovery, only if KEY was alerting;
 #                                         an empty MESSAGE clears silently
 #   monitoring-notify resolve PREFIX [KEY...]  clear every PREFIX* key not listed
-#   monitoring-notify send MESSAGE        one-off message
+#   monitoring-notify send MESSAGE [FIELD...]  one-off message; each
+#                                         "Label: value" FIELD is a Slack field
 #   monitoring-notify sms TEXT NUMBER...  SMS to the given numbers
 #   monitoring-notify test                one test message per status
 #
@@ -140,7 +141,12 @@ def escape(text):
     return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
-def slack_payload(text, kind):
+def split_field(field):
+    label, _, value = field.partition(":")
+    return label.strip(), value.strip()
+
+
+def slack_payload(text, kind, fields=()):
     title, _, body = text.partition("\n")
     status = "still failing" if kind == "reminder" else kind
     return {
@@ -148,6 +154,10 @@ def slack_payload(text, kind):
             {
                 "color": COLORS.get(kind, "#9e9e9e"),
                 "fallback": headline(title),
+                "fields": [
+                    {"short": True, "title": label, "value": escape(value)}
+                    for label, value in map(split_field, fields)
+                ],
                 "footer": " · ".join(
                     filter(None, [LABEL, socket.gethostname(), status])
                 ),
@@ -158,16 +168,17 @@ def slack_payload(text, kind):
     }
 
 
-def deliver(message, kind="info"):
+def deliver(message, kind="info", fields=()):
     if len(message) > MAX_LENGTH:
         message = message[:MAX_LENGTH] + "\n…truncated"
     text = headline(message + (" (still failing)" if kind == "reminder" else ""))
+    text = "\n".join([text, *fields])
     ok = True
     if SLACK_WEBHOOK_URL:
         ok = (
             post(
                 SLACK_WEBHOOK_URL,
-                json.dumps(slack_payload(message, kind)).encode(),
+                json.dumps(slack_payload(message, kind, fields)).encode(),
                 {"Content-Type": "application/json"},
             )
             and ok
@@ -240,19 +251,24 @@ def main(argv):
         return clear(argv[2], argv[3])
     if len(argv) >= 3 and argv[1] == "resolve":
         return resolve(argv[2], argv[3:])
-    if len(argv) == 3 and argv[1] == "send":
-        return 0 if muted() or deliver(argv[2]) else 1
+    if len(argv) >= 3 and argv[1] == "send":
+        return 0 if muted() or deliver(argv[2], "info", argv[3:]) else 1
     if len(argv) >= 4 and argv[1] == "sms":
         return 0 if muted() or sms(headline(argv[2]), argv[3:]) else 1
     if len(argv) == 2 and argv[1] == "test":
         results = [
-            deliver(f"monitoring test: {kind}\nsecond line", kind)
-            for kind in ("alert", "reminder", "recovered", "info")
+            deliver(f"monitoring test: {kind}\nsecond line", kind, fields)
+            for kind, fields in (
+                ("alert", ()),
+                ("reminder", ()),
+                ("recovered", ()),
+                ("info", ("First: one", "Second: two")),
+            )
         ]
         return 0 if all(results) else 1
     print(
         "usage: monitoring-notify alert|clear KEY MESSAGE | resolve PREFIX [KEY...]"
-        " | send MESSAGE | sms TEXT NUMBER... | test",
+        " | send MESSAGE [FIELD...] | sms TEXT NUMBER... | test",
         file=sys.stderr,
     )
     return 2

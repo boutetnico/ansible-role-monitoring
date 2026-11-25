@@ -164,16 +164,17 @@ def alert(a):
     reason = "possible missing index" if missing_index else "slow"
     fp = a["fp"] if len(a["fp"]) <= 2900 else a["fp"][:2900] + " …"
     users = ", ".join(sorted(a["users"])) or "unknown"
-    details = [
-        f"users: {users}",
-        f"max time: {a['max_qt']:.2f}s",
-        f"rows examined: {humanize(a['max_examined'])}",
-        f"examined/sent: {humanize(a['ratio'])}",
-        f"calls since last run: {a['count']}",
+    fields = [
+        f"Reason: {reason}",
+        f"Users: {users}",
+        f"Max time: {a['max_qt']:.2f}s",
+        f"Rows examined: {humanize(a['max_examined'])}",
+        f"Examined / sent: {humanize(a['ratio'])}",
+        f"Calls since last run: {a['count']}",
     ]
     if a["full_scan"]:
-        details.append("full scan: yes")
-    notify("send", f"New slow query ({reason})\n{fp}\n" + "\n".join(details))
+        fields.append("Full scan: yes")
+    notify("send", f"🐌 New slow query\n```{fp}```", *fields)
 
 
 def main():
