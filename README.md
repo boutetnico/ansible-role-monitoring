@@ -71,7 +71,7 @@ Role Variables
 | monitoring_alb_targets_watch          | no       | `{}`                              | dict    | `region`, `credentials`, `tag_key`, `tag_value`.               |
 | monitoring_ses_quota_watch            | no       | `{}`                              | dict    | `region`, `credentials`, `threshold_percent`.                  |
 | monitoring_sentry_events_watch        | no       | `{}`                              | dict    | `api_url`, `api_token`, `compose_project`.                     |
-| monitoring_es_logs_watch              | no       | `{}`                              | dict    | `url`, `username`, `password`, `rules`.                        |
+| monitoring_es_logs_watch              | no       | `{}`                              | dict    | `url`, `username`, `password`, `timeout`, `rules`.             |
 | monitoring_slow_query_watch           | no       | `{}`                              | dict    | `slow_log_path` and thresholds.                                |
 | monitoring_mysql_replication_watch    | no       | `{}`                              | dict    | Every minute; `max_lag_seconds` (default 7200).                |
 | monitoring_table_fragmentation_watch  | no       | `{}`                              | dict    | Daily; `min_free_mb`, `min_free_pct`.                          |
@@ -86,7 +86,7 @@ A `monitoring_mysql_query_checks` query must return one number, e.g. `SELECT COU
 
 AWS checks take `credentials`: `default` (the boto3 credential chain) or `instance-profile` (EC2 instance metadata only). Each `monitoring_s3_backup_watch.checks` entry takes `bucket`, `prefix`, `max_age_hours` and optionally `min_size` (bytes) and `name`.
 
-Elasticsearch `rules` are `frequency` rules (`filter`, `threshold`, `realert_minutes`) or `flatline` rules (`threshold`, `baseline_hours`), each with `name`, `title`, `index`, `timeframe_minutes`, `query_key`, `text_template` and optionally `timestamp_field` (default `@timestamp`).
+Elasticsearch `rules` are `frequency` rules (`filter`, `threshold`, `realert_minutes`) or `flatline` rules (`threshold`, `baseline_hours`), each with `name`, `title`, `index`, `timeframe_minutes`, `query_key`, `text_template` and optionally `timestamp_field` (default `@timestamp`). `timeout` is how long a query may take, in seconds (default 10).
 
 Dependencies
 ------------

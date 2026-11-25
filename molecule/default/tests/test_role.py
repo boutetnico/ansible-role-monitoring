@@ -234,6 +234,17 @@ def test_notifier_signs_a_valid_vonage_token(host):
     assert check.rc == 0, check.stdout + check.stderr
 
 
+def test_es_logs_reports_a_timeout(host):
+    host.run(
+        "nohup python3 -c 'import socket, time; s = socket.socket(); "
+        's.bind(("127.0.0.1", 9200)); s.listen(); time.sleep(10)\' >/dev/null 2>&1 &'
+    )
+    host.run("sleep 1")
+    result = host.run(f"{BIN}/check-es-logs")
+    assert result.rc == 1
+    assert "(Elasticsearch did not answer within 1s)" in result.stderr
+
+
 def test_notifier_formats_slack_attachments(host):
     result = host.run(
         "python3 -c 'import json, runpy; "

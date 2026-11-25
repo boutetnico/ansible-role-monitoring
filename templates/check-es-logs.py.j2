@@ -23,6 +23,7 @@ STATE_DIR = Path({{ (monitoring_state_dir ~ '/check-es-logs') | to_json }})
 ES_URL = {{ monitoring_es_logs_watch.url | default('http://127.0.0.1:9200') | to_json }}
 ES_USER = {{ monitoring_es_logs_watch.username | default('') | to_json }}
 ES_PASS = {{ monitoring_es_logs_watch.password | default('') | to_json }}
+ES_TIMEOUT = {{ monitoring_es_logs_watch.timeout | default(10) | int }}
 RULES = json.loads(
     r"""{{ monitoring_es_logs_watch.rules | default([]) | to_json }}""",
 )
@@ -46,11 +47,17 @@ def es_post(path, body):
         token = base64.b64encode(f"{ES_USER}:{ES_PASS}".encode()).decode()
         req.add_header("Authorization", f"Basic {token}")
     try:
-        with urllib.request.urlopen(req, timeout=10) as r:
+        with urllib.request.urlopen(req, timeout=ES_TIMEOUT) as r:
             return json.load(r)
     except urllib.error.HTTPError as e:
         body = e.read().decode(errors="replace")[:500]
         raise RuntimeError(f"ES {e.code} on {path}: {body}") from None
+    except (TimeoutError, urllib.error.URLError) as e:
+        if isinstance(e, TimeoutError) or isinstance(e.reason, TimeoutError):
+            raise RuntimeError(
+                f"Elasticsearch did not answer within {ES_TIMEOUT}s"
+            ) from None
+        raise
 
 
 def search_path(rule):
@@ -190,9 +197,8 @@ for rule in RULES:
     try:
         handlers[rule["type"]](rule)
     except Exception as e:
-        failed.append(rule.get("name", "?"))
-        print(f"rule {rule.get('name', '?')}: {e}", file=sys.stderr)
+        failed.append(f"{rule.get('name', '?')} ({e})")
 
 if failed:
-    print(f"rules failed: {', '.join(failed)}", file=sys.stderr)
+    print(f"rules failed: {'; '.join(failed)}", file=sys.stderr)
     sys.exit(1)

@@ -104,6 +104,7 @@
       api_url: https://sentry.example.com/api/0/organizations/example/stats_v2/
       api_token: test-token
     monitoring_es_logs_watch:
+      timeout: 1
       url: http://127.0.0.1:9200
       rules:
         - name: errors
