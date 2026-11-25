@@ -8,8 +8,17 @@ set -euo pipefail
 NOTIFY="{{ monitoring_scripts_path }}/monitoring-notify"
 PROJECT={{ monitoring_sentry_events_watch.compose_project | default('sentry-self-hosted') | quote }}
 
-response=$(printf 'Authorization: Bearer %s\n' {{ monitoring_sentry_events_watch.api_token | quote }} \
-    | /usr/bin/curl -sf --max-time 10 -H @- {{ monitoring_sentry_events_watch.api_url | quote }})
+if ! response=$(printf 'Authorization: Bearer %s\n' {{ monitoring_sentry_events_watch.api_token | quote }} \
+    | /usr/bin/curl -sS --max-time 10 -w '\n%{http_code}' -H @- {{ monitoring_sentry_events_watch.api_url | quote }} 2>&1); then
+    echo "Sentry API unreachable: $(printf '%s\n' "$response" | /usr/bin/grep -m 1 '^curl:')" >&2
+    exit 1
+fi
+status=${response##*$'\n'}
+response=${response%$'\n'*}
+if [ "$status" != 200 ]; then
+    echo "Sentry API returned HTTP ${status}" >&2
+    exit 1
+fi
 accepted=$(printf '%s' "$response" | /usr/bin/python3 -c '
 import json, sys
 for group in json.load(sys.stdin).get("groups", []):

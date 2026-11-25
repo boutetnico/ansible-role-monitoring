@@ -245,6 +245,15 @@ def test_es_logs_reports_a_timeout(host):
     assert "(Elasticsearch did not answer within 1s)" in result.stderr
 
 
+def test_sentry_events_reports_why_the_api_failed(host):
+    result = host.run(f"{BIN}/check-sentry-events")
+    assert result.rc == 1
+    assert any(
+        reason in result.stderr
+        for reason in ("Sentry API unreachable: curl:", "Sentry API returned HTTP")
+    )
+
+
 def test_notifier_formats_slack_attachments(host):
     result = host.run(
         "python3 -c 'import json, runpy; "
